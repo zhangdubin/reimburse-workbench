@@ -328,6 +328,15 @@ def start_upgrade(db, version: str, operator: str = "") -> dict:
     asset = uc.platform_asset(manifest, arch) if manifest else None
     if manifest and not asset:
         return {"ok": False, "error": "manifest 里没有 %s 架构的镜像包" % arch}
+    if asset:
+        # manifest 里的 images.<arch> 项只有 name/sha256/size，没有下载地址；
+        # 真正的 URL 在 Release assets 里，按文件名对上（对不上=Release 与 manifest 不一致）
+        rel_asset = (rel.get("assets") or {}).get(asset.get("name") or "")
+        if not rel_asset or not rel_asset.get("url"):
+            return {"ok": False, "error": "Release 资产里找不到 %s 的下载地址（manifest 与 Release 不一致？）"
+                     % (asset.get("name") or "?")}
+        asset = dict(asset)
+        asset["url"] = rel_asset["url"]
     if not manifest:
         if uc.require_manifest(db):
             return {"ok": False, "error": "Release 缺少 manifest.json，无法校验完整性；"
