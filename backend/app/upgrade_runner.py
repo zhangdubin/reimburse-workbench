@@ -468,10 +468,22 @@ def _safe_extract(tf, dest: str) -> None:
 
 
 def cleanup_worker() -> None:
-    """升级结束后把执行器容器收掉（它自己是 AutoRemove=False 的）。"""
+    """升级结束后把执行器容器收掉（它自己是 AutoRemove=False 的）。
+
+    只在执行器已退出时才删：新 app 启动时执行器可能还在做健康检查/收尾，
+    启动即强删会把 worker 杀死在半路（旧容器 prev-* 和收尾日志就永远留着）。
+    """
     try:
         c = dk.container_find("reimburse-upgrader")
         if c:
-            dk.container_remove(c.get("Id") or "", force=True)
+            cid = c.get("Id") or ""
+            try:
+                running = (dk.container_inspect(cid).get("State") or {}).get("Running")
+            except Exception:  # noqa: BLE001
+                running = None
+            if running:
+                print("[upgrade] 升级执行器仍在收尾（健康检查/清理旧容器），跳过清理")
+                return
+            dk.container_remove(cid, force=True)
     except Exception:  # noqa: BLE001
         pass
