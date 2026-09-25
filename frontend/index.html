@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <!-- viewport-fit=cover：允许内容铺到刘海/圆角区域，再用 env(safe-area-inset-*)
+       把真正的内容推回来。不加这个，iPhone 横屏左右会被切掉一截。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>销售费用报销管理工作台</title>
+  <!-- 内联 data-URI 图标：浏览器不会再单独请求 /favicon.ico（那条请求必然 404，
+       会在控制台留一条与业务无关的红色报错，掩盖真正的故障） -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231a3c6e'/%3E%3Ctext x='16' y='22' font-size='17' font-family='PingFang SC,Microsoft YaHei,sans-serif' font-weight='700' fill='%23fff' text-anchor='middle'%3E销%3C/text%3E%3C/svg%3E">
+  <!-- 手机版：加到主屏幕后按独立应用打开（没有浏览器地址栏），观感接近原生 App。
+       内网多为 http，所以不做 Service Worker 离线缓存——没必要的复杂度。 -->
+  <meta name="theme-color" content="#1a3c6e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="费用报销">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/app.css">
+  <!-- 必须排在 app.css 之后：手机版靠文件顺序覆盖桌面规则 -->
+  <link rel="stylesheet" href="css/mobile.css">
+</head>
+<body>
+  <div id="app" class="layout" style="display:none">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-logo">销</div>
+        <div class="brand-text">
+          <b>销售费用报销</b>
+          <span>管理工作台</span>
+        </div>
+        <button class="m-nav-close" id="m-nav-close" type="button" aria-label="关闭导航">&times;</button>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="nav-foot">
+        <span id="brand-ver">v—</span> · 内网部署版
+      </div>
+    </aside>
+    <div class="m-backdrop" id="m-backdrop"></div>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="m-nav-btn" id="m-nav-btn" type="button" aria-label="打开导航">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="topbar-main">
+          <h1 id="page-title">加载中…</h1>
+          <div class="sub" id="page-sub"></div>
+        </div>
+        <div class="topbar-right">
+          <span class="env-chip" id="db-chip" title="后端连接状态">连接中…</span>
+          <span class="env-chip user-chip" id="user-chip" title="点击打开账号菜单"></span>
+        </div>
+      </header>
+
+      <div class="toolbar" id="toolbar" style="display:none"></div>
+
+      <div class="view">
+        <div class="view-inner" id="view-inner"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 底部标签栏：只在手机断点下显示（见 mobile.css），入口由 mobile.js 按权限渲染 -->
+  <nav class="mtabbar" id="mtabbar"></nav>
+
+  <div id="modal-root"></div>
+  <div id="toast-root"></div>
+
+  <script src="vendor/echarts.min.js?v=2.9.9"></script>
+  <!-- Data Matrix / QR 解码（本地化，禁 CDN）；扫码核验页依赖它 -->
+  <script src="vendor/zxing.min.js?v=2.9.9"></script>
+  <script src="js/util.js?v=2.9.9"></script>
+  <script src="js/auth.js?v=2.9.9"></script>
+  <script src="js/api.js?v=2.9.9"></script>
+  <script src="js/charts.js?v=2.9.9"></script>
+  <script src="js/ai.js?v=2.9.9"></script>
+  <script src="js/print.js?v=2.9.9"></script>
+  <script src="js/mobile.js?v=2.9.9"></script>
+  <script src="js/views/dashboard.js?v=2.9.9"></script>
+  <script src="js/views/reimbursements.js?v=2.9.9"></script>
+  <script src="js/views/invoices.js?v=2.9.9"></script>
+  <script src="js/views/inbox.js?v=2.9.9"></script>
+  <script src="js/views/expenses.js?v=2.9.9"></script>
+  <script src="js/views/alerts.js?v=2.9.9"></script>
+  <script src="js/views/users.js?v=2.9.9"></script>
+  <script src="js/views/settings.js?v=2.9.9"></script>
+  <script src="js/views/upgrade.js?v=2.9.9"></script>
+  <script src="js/views/audit.js?v=2.9.9"></script>
+  <script src="js/views/ai_settings.js?v=2.9.9"></script>
+  <script src="js/scanner.js?v=2.9.9"></script>
+  <script src="js/app.js?v=2.9.9"></script>
+</body>
+</html>

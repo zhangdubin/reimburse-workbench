@@ -1,0 +1,33 @@
+# OCR 可选依赖 —— 本地把照片 / 扫描件变成文字
+#
+# 为什么单独一个文件
+# ----------------
+# 这组依赖约 300MB（onnxruntime + opencv + numpy 占绝大部分），
+# 而它们**只**服务于「图片型发票」这一条链路：OFD / XML / XLSX / 电子 PDF
+# 都不需要 OCR。所以默认安装，但留一个 INSTALL_OCR=0 的开关，
+# 镜像必须瘦身的场合可以关掉——服务照常启动，只是图片类发票改为人工补录，
+# 识别结果里会注明「未检测到可用 OCR 后端」，不会报错。
+#
+# 注意：Dockerfile 里刻意不跑 apt（详见 README「已知边界」），
+# 因此这里选的都是**自带二进制的纯 pip 包**，不需要安装任何系统库：
+#   - pypdfium2  自带 PDFium，负责 PDF 文字层直读与栅格化
+#   - rapidocr-onnxruntime 自带 PP-OCR 模型，跑在 onnxruntime 上
+#
+# 为什么这里不写死版本号（与 requirements.txt 的风格不同）
+# ------------------------------------------------------
+# 这几个包对 Python 版本、numpy 主版本、平台轮子都很敏感，
+# 写死很容易在某个 Python 小版本上找不到轮子从而整条构建失败。
+# 这里只给**下界**，把具体版本交给 pip 按目标解释器解析，
+# 构建出来是什么版本由 `pip freeze` 记录下来即可。
+#
+# opencv 的处理：rapidocr-onnxruntime 声明依赖 opencv-python，
+# 而 opencv-python 在 slim 镜像里会因为缺 libGL.so.1 直接 import 失败
+# （典型报错 ImportError: libGL.so.1: cannot open shared object file）。
+# 绕法见 Dockerfile：装完后把它换成 opencv-python-headless，
+# cv2 模块由 headless 包提供，接口一致但不链接 GUI 库。
+
+pypdfium2>=4.30.0
+rapidocr-onnxruntime>=1.2.3,<2
+onnxruntime>=1.17
+Pillow>=10.0
+numpy>=1.24

@@ -1,0 +1,992 @@
+/* ==========================================================================
+   手机版 —— 与桌面版共用同一套 JS、接口与权限模型，只换外壳
+
+   设计原则
+   --------
+   1. **不复制业务代码**。断点 820px 以下只做三件事：换外壳（侧栏→抽屉 +
+      底部标签栏）、表格→卡片、弹窗→全屏。视图 JS 一行没动，
+      所以权限过滤、识别回填、批量删除这些逻辑在手机上与桌面完全同源。
+   2. 表格卡片化不是各视图自己写一套，而是由 mobile.js 从 `<thead>` 读列名、
+      回填到每个 `<td data-label>`，再用 CSS 画出来。某个表格结构对不上时
+      （列数不匹配）就原样保留成可横向滚动的表格，宁可少变也不出错。
+   3. 触控尺寸：所有可点元素在手机上不低于 38px，主操作 42px；输入框字号
+      一律 16px——iOS Safari 在字号 <16px 的输入框聚焦时会自动放大页面，
+      用户点一下输入框整页就跳，是手机上最典型的「难用」。
+   4. 安全区：刘海屏/底部横条用 env(safe-area-inset-*)，配合 index.html 的
+      viewport-fit=cover，内容不会被遮住。
+   5. 本文件必须在 app.css **之后**加载：同优先级下靠文件顺序覆盖桌面规则。
+   ========================================================================== */
+
+/* 手机版专属节点：桌面端一律不显示。
+   这些节点是常驻在 DOM 里的（不是渲染时按断点决定），所以必须显式隐藏，
+   否则桌面上会多出一个「×」关闭键和一个空的底部标签栏。 */
+.m-nav-btn,
+.m-nav-close,
+.m-backdrop,
+.mtabbar,
+.m-camera {
+  display: none;
+}
+
+@media (max-width: 820px) {
+  /* ---------------- 基础 ---------------- */
+  html {
+    -webkit-text-size-adjust: 100%; /* 横屏时不许浏览器自己放大字号 */
+  }
+  .layout {
+    height: 100vh;
+    overflow: hidden;
+  }
+  @supports (height: 100dvh) {
+    /* 移动端 100vh 会把地址栏算进去，底部按钮被顶出屏幕；dvh 才是可见高度 */
+    .layout {
+      height: 100dvh;
+    }
+  }
+  /* 抽屉打开时锁住背景滚动，否则手指一划连底下的列表也动了 */
+  body.m-nav-open {
+    overflow: hidden;
+  }
+
+  /* ---------------- 侧栏：抽屉 ---------------- */
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 1300;
+    width: 262px;
+    flex-basis: 262px;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: var(--shadow-lg);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    display: none;            /* 默认隐藏，不占 flex 空间 */
+  }
+  body.m-nav-open .sidebar {
+    transform: translateX(0);
+    display: flex;           /* 打开时恢复 flex 布局 */
+  }
+  /* 侧栏打开时锁定主区域滚动，防止 KPI 被推出视口 */
+  body.m-nav-open .main {
+    overflow: hidden;
+    height: 100vh;
+  }
+  /* 覆盖 1080px 断点的「收成图标条」——手机上的抽屉要显示完整文字 */
+  .brand-text,
+  .nav-group,
+  .nav-foot {
+    display: block;
+  }
+  .nav-item span.lbl {
+    display: inline;
+  }
+  .brand {
+    justify-content: flex-start;
+    padding: var(--sp-5) var(--sp-5) var(--sp-4);
+    gap: var(--sp-3);
+  }
+  .nav-item {
+    justify-content: flex-start;
+    padding: 0 10px;
+    min-height: 46px; /* 手指点得中 */
+    font-size: var(--fs-md);
+  }
+  .nav-item .ico {
+    width: 19px;
+    height: 19px;
+    flex-basis: 19px;
+  }
+  .m-nav-close {
+    display: inline-flex;
+    margin-left: auto;
+    width: 36px;
+    height: 36px;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--text-3);
+    font-size: 22px;
+    line-height: 1;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .m-nav-close:hover {
+    background: var(--panel-2);
+    color: var(--danger);
+  }
+
+  .m-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 1290;
+    background: rgba(16, 24, 40, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s;
+  }
+  body.m-nav-open .m-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* ---------------- 顶栏 ---------------- */
+  .topbar {
+    height: calc(54px + env(safe-area-inset-top));
+    flex: 0 0 auto;
+    padding: env(safe-area-inset-top) var(--sp-4) 0;
+    gap: var(--sp-3);
+  }
+  .m-nav-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    flex: 0 0 38px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 9px;
+    color: var(--text);
+    cursor: pointer;
+    padding: 0;
+  }
+  .m-nav-btn:active {
+    background: var(--primary-weak);
+    border-color: var(--primary);
+  }
+  .m-nav-btn svg {
+    width: 19px;
+    height: 19px;
+  }
+  .topbar-main {
+    min-width: 0;
+    flex: 1;
+  }
+  .topbar h1 {
+    font-size: var(--fs-md);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar .sub {
+    display: none; /* 手机顶栏只留标题，副标题让位给按钮 */
+  }
+  #db-chip {
+    display: none;
+  }
+  .topbar-right {
+    gap: var(--sp-2);
+    flex: 0 0 auto;
+  }
+  .user-chip {
+    padding: 3px 6px 3px 3px;
+  }
+  .user-chip .uc-body b,
+  .user-chip .uc-caret {
+    display: none; /* 只留头像，省横向空间；完整信息在菜单里 */
+  }
+  .user-menu {
+    left: var(--sp-4);
+    right: var(--sp-4) !important; /* 覆盖 app.js 按锚点算出的内联 right */
+    width: auto;
+  }
+  .um-item {
+    min-height: 46px;
+    display: flex;
+    align-items: center;
+  }
+
+  /* ---------------- 底部标签栏 ---------------- */
+  .mtabbar {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1250;
+    background: rgba(255, 255, 255, 0.97);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .mtab {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 56px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 6px 2px;
+    font-size: var(--fs-2xs);
+    color: var(--text-3);
+    cursor: pointer;
+    position: relative;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .mtab svg {
+    width: 21px;
+    height: 21px;
+  }
+  .mtab span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mtab.active {
+    color: var(--primary);
+    font-weight: 600;
+  }
+  .mtab.active::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 26px;
+    height: 2.5px;
+    border-radius: 0 0 3px 3px;
+    background: var(--primary);
+  }
+  .mtab .nav-badge {
+    position: absolute;
+    top: 3px;
+    left: 50%;
+    margin-left: 4px;
+    background: var(--danger);
+    color: #fff;
+    font-size: 10px;
+    line-height: 15px;
+    padding: 0 5px;
+    border-radius: 9px;
+    font-weight: 600;
+  }
+  .mtab.mtab-more svg {
+    opacity: 0.85;
+  }
+
+  /* ---------------- 内容区 ---------------- */
+  .view {
+    padding: var(--sp-4) var(--sp-4) calc(76px + env(safe-area-inset-bottom));
+    -webkit-overflow-scrolling: touch;
+  }
+  .view-inner {
+    max-width: 100%;
+  }
+  .card {
+    margin-bottom: var(--sp-4);
+  }
+  .card-head {
+    padding: var(--sp-4);
+    gap: var(--sp-3);
+  }
+  .card-head .hint {
+    flex-basis: 100%;
+  }
+  .card-body {
+    padding: var(--sp-4);
+  }
+  .card-body.tight {
+    padding: var(--sp-3);
+  }
+
+  /* ---------------- 工具条：筛选折叠 ---------------- */
+  .toolbar {
+    padding: 10px var(--sp-4);
+    gap: var(--sp-3);
+  }
+  .toolbar > .spacer {
+    display: none; /* 手机上不再靠它撑开，让按钮自己铺满 */
+  }
+  .toolbar .search-input {
+    flex: 1 1 100%;
+    width: auto;
+  }
+  .toolbar .m-filter-toggle {
+    flex: 0 0 auto;
+    min-height: 40px;
+    position: relative;
+  }
+  .m-filter-toggle .m-cnt {
+    font-size: var(--fs-2xs);
+    color: var(--text-3);
+  }
+  .m-filter-toggle.open .m-cnt {
+    color: inherit;
+  }
+  .m-filter-toggle .m-caret {
+    width: 12px;
+    height: 12px;
+    transition: transform 0.18s;
+  }
+  .m-filter-toggle.open .m-caret {
+    transform: rotate(180deg);
+  }
+  .m-filters {
+    flex: 1 1 100%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    order: 9; /* 排到最后：展开时在工具条下方整块出现，不动上面的按钮 */
+  }
+  .m-filters[hidden] {
+    display: none;
+  }
+  .m-filters > .field {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+  .m-filters > .field > label {
+    flex: 0 0 72px;
+    font-size: var(--fs-sm);
+  }
+  .m-filters > .field select,
+  .m-filters > .field input:not([type='checkbox']):not([type='radio']) {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .m-filters > .field .muted {
+    display: none;
+  }
+  .toolbar > .btn,
+  .toolbar > .btn-group {
+    flex: 1 1 auto;
+  }
+
+  /* ---------------- 表格 → 卡片 ----------------
+     结构约定（由 mobile.js 回填）：
+       .m-has-ck  行内带勾选框 -> 勾选框浮到卡片右上角
+       .m-ck      勾选列本身
+       .m-head    卡片标题单元格（首列），无标签、字号更大
+       .m-act     操作列，底部整行铺开的大按钮
+       .m-plain   占位行（空态），不套卡片
+     任何 td 只要带 data-label，就渲染成「左标签 + 右值」。
+  ------------------------------------------------ */
+  .table-wrap {
+    overflow-x: visible;
+  }
+  table.tbl {
+    display: block;
+    border-spacing: 0;
+  }
+  table.tbl thead {
+    display: none; /* 列名已经逐格落到卡片上，表头只会占位置 */
+  }
+  table.tbl tbody,
+  table.tbl tfoot {
+    display: block;
+  }
+  table.tbl tbody tr {
+    display: block;
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: var(--sp-2) 0;
+    margin-bottom: var(--sp-4);
+  }
+  /* 斑马纹在卡片布局里没有意义，压掉免得出现半深半浅的卡片 */
+  table.tbl tbody tr:nth-child(even),
+  table.tbl tbody tr:hover {
+    background: var(--panel);
+  }
+  table.tbl tbody tr.picked {
+    background: var(--panel);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px var(--primary-weak), var(--shadow);
+  }
+  table.tbl tbody tr.danger-row {
+    border-color: #f6cccc;
+    background: var(--danger-weak);
+  }
+  table.tbl tbody td {
+    display: block;
+    position: relative;
+    padding: 5px var(--sp-4) 5px 96px;
+    border-bottom: none;
+    min-height: 26px;
+    line-height: 1.55;
+  }
+  table.tbl tbody td::before {
+    content: attr(data-label);
+    position: absolute;
+    left: var(--sp-4);
+    top: 5px;
+    width: 74px;
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+    line-height: 1.55;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left; /* 数字列 td 是 text-align:right，会继承进标签把它顶到中间 */
+  }
+  table.tbl tbody td.m-head {
+    padding: 13px var(--sp-4) 10px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--sp-2);
+    min-height: 0;
+  }
+  /* 卡片模式纵向空间充足，省略号截断改为自然换行——
+     触屏没有悬停 title，截断掉的收件主题/销售方就永远看不见了 */
+  table.tbl tbody td.ellipsis,
+  table.tbl tbody td .ellipsis,
+  table.tbl tbody td .sub-line {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    word-break: break-word;
+  }
+  table.tbl tbody td .ellipsis { display: block; }
+  table.tbl tbody td.m-head::before {
+    display: none;
+  }
+  table.tbl tbody td.m-head > div:first-child {
+    font-size: var(--fs-md);
+  }
+  table.tbl tbody tr.m-has-ck td.m-head {
+    padding-right: 48px;
+  }
+  table.tbl tbody td.m-ck {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: auto;
+    min-height: 0;
+    padding: 4px;
+    margin: 0;
+  }
+  table.tbl tbody td.m-ck input {
+    width: 22px;
+    height: 22px;
+  }
+  table.tbl tbody td.m-act {
+    padding: 10px var(--sp-4) 6px;
+    margin-top: var(--sp-3);
+    border-top: 1px dashed var(--border);
+    min-height: 0;
+  }
+  /* 「操作」二字对按钮行没有信息量，卡片上直接不显示 */
+  table.tbl tbody td.m-act::before {
+    display: none;
+  }
+  table.tbl tbody td.m-act .row-actions {
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+  }
+  table.tbl tbody td.m-act .btn {
+    flex: 1 1 auto;
+    min-width: 72px;
+    height: 40px;
+    line-height: 38px;
+    font-size: var(--fs-base);
+  }
+  table.tbl tbody tr.m-plain {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin-bottom: 0;
+  }
+  table.tbl tbody tr.m-plain td {
+    padding: 0;
+  }
+  table.tbl tbody tr.m-plain td::before {
+    display: none;
+  }
+  table.tbl tfoot {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel-2);
+    overflow: hidden;
+  }
+  /* 合计行：原来的「每格独占一行」把「合计」和金额拆成上下两行，
+     中间夹着空白，观感散。改为一行：左说明、右金额。 */
+  table.tbl tfoot tr {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  table.tbl tfoot td {
+    display: inline-block;
+    padding: 11px var(--sp-4);
+    border-bottom: none;
+    text-align: left;
+  }
+  table.tbl tfoot td:empty {
+    display: none;
+  }
+
+  /* ---------------- 明细编辑器：标签在上、输入铺满 ---------------- */
+  .items-editor {
+    overflow: visible;
+    border-radius: var(--radius);
+  }
+  .items-editor table,
+  .items-editor tbody,
+  .items-editor tfoot,
+  .items-editor tr,
+  .items-editor td {
+    display: block;
+    width: auto;
+  }
+  .items-editor thead {
+    display: none;
+  }
+  .items-editor tbody tr {
+    border-bottom: 1px solid var(--border);
+    padding: var(--sp-2) 0 var(--sp-4);
+  }
+  .items-editor tbody tr:last-child {
+    border-bottom: none;
+  }
+  .items-editor td {
+    padding: 4px var(--sp-4) 4px var(--sp-4);
+    border-bottom: none;
+  }
+  .items-editor td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    margin-bottom: 3px;
+  }
+  .items-editor td:empty::before {
+    content: none;
+  }
+  .items-editor td:last-child {
+    text-align: right;
+    padding-bottom: 0;
+  }
+  .items-editor tfoot td {
+    border-bottom: none;
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .items-editor input,
+  .items-editor select {
+    height: 42px;
+    font-size: 16px; /* 见文件头第 3 条：小于 16px 会被 iOS 强制放大 */
+  }
+  .items-editor .del-row {
+    font-size: 20px;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--panel);
+  }
+
+  /* ---------------- 弹窗：全屏 ---------------- */
+  .modal-mask {
+    padding: 0;
+    align-items: stretch;
+    backdrop-filter: none;
+  }
+  .modal {
+    /* 视图给的是内联宽度（880px 之类），必须 !important 才压得住 */
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 100%;
+    max-height: 100% !important;
+    border-radius: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-head {
+    padding: calc(var(--sp-4) + env(safe-area-inset-top)) var(--sp-4) var(--sp-4);
+    flex: 0 0 auto;
+  }
+  .modal-head h3 {
+    font-size: var(--fs-md);
+  }
+  .modal-body {
+    padding: var(--sp-4);
+    flex: 1 1 auto;
+  }
+  .modal-foot {
+    padding: var(--sp-3) var(--sp-4) calc(var(--sp-3) + env(safe-area-inset-bottom));
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+  }
+  .modal-foot .btn {
+    flex: 1 1 auto;
+    min-width: 88px;
+    height: 42px;
+    line-height: 40px;
+  }
+
+  /* ---------------- 表单 / 详情 / 时间轴 ---------------- */
+  .form-grid {
+    grid-template-columns: 1fr;
+    gap: var(--sp-4);
+  }
+  /* 报销单等详情页的 desc-grid：手机上从「竖排小卡」改为紧凑键值行——
+     dt 左、dd 右，每行一条虚线分隔；原来的上下堆叠一屏只能看 5 个字段，
+     11 个字段要滚两三屏，是「详情页太丑」的主要来源。 */
+  .desc-grid {
+    display: block;
+    gap: 0;
+  }
+  .desc-grid .desc-item {
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--sp-3);
+    padding: 9px 0;
+    border-bottom: 1px dashed var(--border);
+    min-height: 0;
+  }
+  .desc-grid .desc-item:last-child {
+    border-bottom: none;
+    padding-bottom: 2px;
+  }
+  .desc-grid .desc-item dt {
+    flex: 0 0 80px;
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+  }
+  .desc-grid .desc-item dd {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--fs-base);
+  }
+  /* 标题/事由/备注/驳回原因这类长文本回到「上标签下内容」，右侧不被压窄 */
+  .desc-grid .desc-item.wide {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+  .desc-grid .desc-item.wide dt {
+    flex: none;
+    width: auto;
+  }
+  /* 金额行突出：大字加粗（列表/桌面口径为金额增长红，此处是单据金额本身，用主色） */
+  .rd-amount dd {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--primary);
+  }
+  /* AI 体检：手机上默认只留「标题 + 按钮」一行，说明文案与空提示都收掉 */
+  .ai-insight {
+    padding: var(--sp-3) var(--sp-4);
+    margin-bottom: var(--sp-4);
+  }
+  .ai-insight-head .muted {
+    display: none;
+  }
+  .ai-empty-hint {
+    display: none;
+  }
+  .ai-insight-body {
+    margin-top: 0;
+  }
+  .ai-insight-body:not(:empty) { /* 点了按钮后有分析结果时恢复上下留白 */
+    margin-top: var(--sp-3);
+  }
+  .desc-grid.divided .desc-item {
+    border-left: none;
+    padding-left: 0;
+    padding-bottom: var(--sp-3);
+    border-bottom: 1px dashed var(--border);
+  }
+  .desc-grid.divided .desc-item:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+  /* 16px 防 iOS 聚焦缩放；同时把触控高度统一到 42px */
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    height: 42px;
+    font-size: 16px;
+  }
+  textarea {
+    height: auto;
+    min-height: 88px;
+    padding: 10px var(--sp-4);
+  }
+  input[type='checkbox'],
+  input[type='radio'] {
+    width: 20px;
+    height: 20px;
+  }
+  .danger-input {
+    height: 46px;
+    font-size: 16px;
+  }
+  .form-section {
+    margin: var(--sp-4) 0;
+  }
+  .timeline {
+    padding-left: var(--sp-5);
+  }
+  .tl-head {
+    gap: var(--sp-2);
+  }
+  .tl-head .tl-meta[style*='margin-left'] {
+    margin-left: 0 !important;
+    flex-basis: 100%;
+  }
+
+  /* ---------------- 其他组件 ---------------- */
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-3);
+  }
+  .kpi {
+    padding: var(--sp-4);
+  }
+  .kpi-value {
+    font-size: var(--fs-xl);
+  }
+  .chart-grid.g2,
+  .chart-grid.g3 {
+    grid-template-columns: 1fr;
+  }
+  .chart,
+  .chart.lg,
+  .chart.sm {
+    height: 264px;
+  }
+  .tabs {
+    padding: 0 var(--sp-2);
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;           /* 页签溢出时横向滑动，不露滚动条 */
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    padding: 12px var(--sp-4);
+    flex: 0 0 auto;                  /* 页签不被压窄，装不下就滑动 */
+  }
+  .pager {
+    padding: var(--sp-3) var(--sp-4) calc(var(--sp-3) + 64px + env(safe-area-inset-bottom));
+    gap: var(--sp-3);
+  }
+  .pager-btns {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+  }
+  .pager-btns .btn {
+    flex: 1 1 auto;
+    min-height: 38px;
+  }
+  .batch-bar {
+    gap: var(--sp-3);
+    font-size: var(--fs-sm);
+  }
+  .batch-bar .spacer {
+    display: none;
+  }
+  .batch-bar .btn {
+    flex: 1 1 auto;
+    min-height: 40px;
+  }
+  .alert-list {
+    max-height: none;
+  }
+  .alert-row {
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+  }
+  .recog-drop {
+    gap: var(--sp-3);
+  }
+  .recog-drop .btn {
+    flex: 1 1 auto;
+    min-height: 40px;
+  }
+  .att-toolbar {
+    gap: var(--sp-3);
+  }
+  .att-toolbar .btn {
+    flex: 1 1 auto;
+    min-height: 40px;
+  }
+  .ai-prov-list,
+  .ai-usage-grid {
+    grid-template-columns: 1fr;
+  }
+  .ai-preset-grid {
+    gap: var(--sp-3);
+  }
+  .ai-hero {
+    padding: var(--sp-4);
+  }
+  .inbox-summary {
+    padding: var(--sp-4) var(--sp-4) var(--sp-2);
+  }
+  #toast-root {
+    left: var(--sp-4);
+    right: var(--sp-4);
+    transform: none;
+    top: calc(var(--sp-4) + env(safe-area-inset-top));
+    align-items: stretch;
+  }
+  .toast {
+    max-width: none;
+  }
+  /* 手机上的「拍照」入口：只在移动端出现，桌面端仍用文件选择器 */
+  .m-camera {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2);
+    min-height: 40px;
+  }
+  .m-camera svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  /* ---------------- 悬浮助手：让开底部标签栏 ---------------- */
+  .ai-fab {
+    right: var(--sp-4);
+    bottom: calc(68px + env(safe-area-inset-bottom));
+    height: 44px;
+  }
+  .ai-panel {
+    left: var(--sp-3);
+    right: var(--sp-3);
+    bottom: calc(62px + env(safe-area-inset-bottom));
+    width: auto;
+    height: min(70vh, 560px);
+    max-width: none;
+  }
+  .ai-msgs {
+    padding: var(--sp-4);
+  }
+  .ai-bubble {
+    max-width: 88%;
+  }
+  .ai-composer textarea {
+    font-size: 16px; /* 同上：防聚焦缩放 */
+  }
+  .ai-chip {
+    min-height: 34px;
+  }
+}
+
+/* 小屏手机（iPhone SE/8 一类，375px 及以下）再收一档 */
+@media (max-width: 400px) {
+  /* 看板 KPI 保持两列：一列会把 6 张卡摞成超长一竖条，全靠滚轮走完 */
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+  }
+  .kpi {
+    padding: var(--sp-3);
+  }
+  .kpi-value {
+    font-size: 17px;
+  }
+  .kpi-sub {
+    font-size: 11px;
+  }
+  table.tbl tbody td {
+    padding-left: 92px;
+  }
+  table.tbl tbody td::before {
+    width: 70px;
+  }
+  .recog-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------------- 系统参数（v2.9.8：指标卡单列 + 参数行上下堆叠） ---------------- */
+@media (max-width: 820px) {
+  .set-metrics {
+    grid-template-columns: 1fr;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+  }
+  .sm-value { font-size: var(--fs-lg); }
+  .set-body { padding: var(--sp-4); gap: var(--sp-4); }
+  .set-panel-head { padding: var(--sp-4); }
+  .set-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+  }
+  .set-ctrl { width: 100%; }
+  /* 更新时间手机端隐藏（低价值噪音）；保存提示文字同理 */
+  .set-meta { display: none; }
+  .set-card .card-foot .cf-hint { display: none; }
+  .set-help { max-width: none; }
+  /* 输入框 16px 防 iOS 聚焦缩放；数字参数框限宽，别撑满整屏 */
+  .set-ctrl .input-unit { max-width: 240px; }
+  .set-ctrl .input-unit input { width: 100%; font-size: 16px; }
+  /* 开关：左边拨钮、右边状态胶囊 */
+  .set-ctrl .set-toggle { width: 100%; max-width: 240px; justify-content: space-between; }
+}
+
+/* ---------------- Jev 配置表（kv）手机端：表格改卡片，与 .tbl 同款手法 ---------------- */
+@media (max-width: 820px) {
+  table.kv { display: block; }
+  table.kv thead { display: none; }
+  table.kv tbody { display: block; }
+  table.kv tbody tr {
+    display: block; background: var(--panel);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: var(--sp-2) 0; margin-bottom: var(--sp-4);
+  }
+  table.kv tbody tr:hover { background: var(--panel); }
+  table.kv tbody td {
+    display: block; position: relative; border-bottom: none;
+    padding: 5px var(--sp-4) 5px 84px; min-height: 26px; line-height: 1.55;
+  }
+  table.kv tbody td::before {
+    content: attr(data-label);
+    position: absolute; left: var(--sp-4); top: 5px; width: 64px;
+    font-size: var(--fs-sm); color: var(--text-3); line-height: 1.55;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  table.kv td:last-child { white-space: normal; }
+  table.kv .jev-inp { width: 100%; max-width: none; font-size: 16px; }
+  /* 掩码提示单独占一行（输入框已撑满） */
+  table.kv td .hint { display: block; margin: 6px 0 0; }
+}
+
+/* 手机端工具栏里的长说明文字占满两行还挤按钮，收起（说明在页面卡片里都有） */
+@media (max-width: 820px) {
+  .toolbar > span.muted { display: none; }
+}
+
+/* ---------------- 系统更新页（v2.9.9，#/upgrade） ---------------- */
+@media (max-width: 820px) {
+  .ug-hero {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-4);
+    padding: var(--sp-4);
+  }
+  .ug-cur { font-size: 28px; }
+  .ug-actions { width: 100%; }
+  .ug-actions .btn { flex: 1; }
+  .ug-latest { padding: 0 var(--sp-4) var(--sp-4); }
+  .ug-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .ug-help { max-width: none; }
+  .ug-ctrl .input-unit { width: 100%; max-width: none; }
+  .ug-ctrl .input-unit input { flex: 1; width: auto !important; font-size: 16px; }
+}

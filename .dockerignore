@@ -1,0 +1,20 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+backend/data
+*.db
+*.sqlite3
+.env
+.DS_Store
+node_modules
+*.log
+tools/
+# 构建产物与数据库备份：镜像里一个都不需要（COPY 只用到 backend/ frontend/ 与几个根文件），
+# 但每轮构建都会把整个上下文传给 daemon —— 这两个目录常有 1 GB+，白白拖慢每次 build。
+dist/
+backups/

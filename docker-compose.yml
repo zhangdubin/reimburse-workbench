@@ -1,0 +1,149 @@
+# 销售费用报销管理工作台 —— 服务编排
+#
+#   docker compose up -d --build     启动
+#   docker compose logs -f app       看日志
+#   docker compose down              停止（保留数据）
+#   docker compose down -v           停止并删除数据库卷（数据不可恢复）
+#
+# 默认端口 8080，可通过 .env 里的 APP_PORT 改。
+#
+# 生产首次启动：
+#   1) .env 里设好 DB_PASSWORD / MAIL_SECRET / ADMIN_PASSWORD
+#   2) docker compose up -d --build
+#   3) 用 .env 里的 ADMIN_USERNAME / ADMIN_PASSWORD 登录；没配就翻日志里的随机密码
+
+services:
+  db:
+    image: postgres:16-alpine
+    # 容器名/卷名/镜像 tag 都可由 .env 覆盖（默认值与单实例部署完全一致）。
+    # 有了这三个开关，同一台机器上可以并存「生产」与「试运行」两套实例而互不干扰：
+    #   APP_CONTAINER=reimburse-app-stg PGDATA_VOLUME=reimburse-pgdata-stg APP_PORT=8081
+    container_name: ${DB_CONTAINER:-reimburse-db}
+    environment:
+      POSTGRES_DB: ${DB_NAME:-workbench}
+      POSTGRES_USER: ${DB_USER:-workbench}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-workbench123}
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-workbench} -d ${DB_NAME:-workbench}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    # 仅内网需要直连查库时再放开
+    # ports:
+    #   - "15432:5432"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 国内/内网构建建议保留镜像源；海外环境改成 https://pypi.org/simple
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        # 1 = 装本地 OCR（图片型发票必需，约 300MB）；0 = 瘦身镜像，
+        # 拍照件/扫描件退回人工补录，服务功能不受影响
+        INSTALL_OCR: ${INSTALL_OCR:-1}
+    image: reimburse-workbench:${IMAGE_TAG:-2.9.9}
+    container_name: ${APP_CONTAINER:-reimburse-app}
+    environment:
+      DATABASE_URL: postgresql+psycopg://${DB_USER:-workbench}:${DB_PASSWORD:-workbench123}@db:5432/${DB_NAME:-workbench}
+      TZ: Asia/Shanghai
+
+      # ---- 初始化 ----
+      # 启动时自动执行 Alembic 迁移到最新版本；关掉就得自己跑 alembic upgrade head
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-1}
+      # 演示数据：生产必须为 0。需要试用数据时改成 1，或手动 docker compose run --rm app python -m app.seed --demo
+      SEED_DEMO: ${SEED_DEMO:-0}
+      # 初始管理员：留空则随机生成 12 位密码并打印到容器日志（docker compose logs app）
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_NAME: ${ADMIN_NAME:-系统管理员}
+
+      # ---- 安全 ----
+      # 邮箱授权码的可逆加密主密钥。生产**必须**显式配置，否则邮箱账号无法安全保存
+      MAIL_SECRET: ${MAIL_SECRET:-}
+      # 外部收票通道令牌（Agent Mail / 邮件网关 / 自建脚本投递用）。留空则关闭该通道
+      INBOX_INGEST_TOKEN: ${INBOX_INGEST_TOKEN:-}
+      # 交互式接口文档：生产建议 0
+      DOCS_ENABLED: ${DOCS_ENABLED:-0}
+      # 跨域白名单，逗号分隔。前后端同容器时留空即可
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+
+      # ---- 存储 ----
+      UPLOAD_DIR: /app/data/uploads
+      UPLOAD_MAX_MB: ${UPLOAD_MAX_MB:-10}
+
+      # ---- AI 智能（可选）----
+      # 大模型的接入凭据存在数据库里（加密），不需要在这里配 Key。
+      # 下面几个是网络与请求层面的兜底参数，只对「服务端访问模型接口」生效。
+      # 走代理才能出网的环境填这里，例如 http://10.10.10.252:1086
+      AI_PROXY: ${AI_PROXY:-}
+      # 内网自建网关用自签证书时设 0（跳过校验，仅限完全可信的内网）
+      AI_VERIFY_SSL: ${AI_VERIFY_SSL:-1}
+      # 模型调用超时与单次最大输出，界面里每个配置还能单独覆盖
+      AI_TIMEOUT_SEC: ${AI_TIMEOUT_SEC:-60}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-2048}
+
+      # ---- 本地 OCR（可选）----
+      # auto = 自动选择（有 RapidOCR 用 RapidOCR，其次 Tesseract）
+      # off  = 强制关闭，全部走人工补录
+      OCR_ENGINE: ${OCR_ENGINE:-auto}
+      # 单次 OCR 的页数上限与 PDF 栅格化倍率（发票基本单页，2.0 已够清晰）
+      OCR_MAX_PDF_PAGES: ${OCR_MAX_PDF_PAGES:-5}
+      OCR_PDF_SCALE: ${OCR_PDF_SCALE:-2.0}
+
+      # ---- 在线升级（v2.9.0+，可选）----
+      # 升级源是 GitHub Release；仓库/令牌也能在界面「系统更新」里填。
+      # 这里只是兜底（界面里配过的优先），适合批量部署时统一预置。
+      UPGRADE_REPO: ${UPGRADE_REPO:-}
+      UPGRADE_TOKEN: ${UPGRADE_TOKEN:-}
+      # 拉升级包走的代理，留空则跟随 AI_PROXY
+      UPGRADE_PROXY: ${UPGRADE_PROXY:-}
+      # 1 = 后台定时检查新版本（默认关，管理员在界面打开更直观）
+      UPGRADE_AUTO_CHECK: ${UPGRADE_AUTO_CHECK:-0}
+      UPGRADE_INTERVAL_HOURS: ${UPGRADE_INTERVAL_HOURS:-6}
+      # 容器内看到的 Docker socket 路径（就是上面 volumes 里的挂载目标，
+      # 不是宿主路径——宿主路径只在挂载源那一侧用）
+      DOCKER_SOCK: /var/run/docker.sock
+      UPGRADE_DIR: /app/data/upgrade
+      # 宿主上的项目目录，原样挂进容器：升级时要用新版覆盖 compose / install.sh
+      HOST_PROJECT_DIR: ${HOST_PROJECT_DIR:-}
+    volumes:
+      # 发票影像是业务凭证，必须落在卷上，容器重建不能丢
+      - uploads:/app/data/uploads
+      # 下载的安装包、升级进展、升级前数据库备份都放这个卷上：
+      # 切换容器时要把这些交给独立的执行器容器，所以必须是命名卷。
+      - upgrade:/app/data/upgrade
+      # ⚠️ 安全边界：挂载 Docker socket 等于把宿主机 root 权限交给本容器。
+      # 这是「应用内一键升级」的代价——升级必须能重建容器，而自己重建自己会在
+      # 中途断链，所以由本容器拉起一个执行器容器来做。只在完全可信的内网开启；
+      # 不需要在线升级时，把 .env 里的 DOCKER_SOCK 指向一个普通空文件即可。
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+      # 宿主项目目录（同一个绝对路径挂进来，容器内外路径一致，执行器才认得）
+      - ${HOST_PROJECT_DIR:-.}:${HOST_PROJECT_DIR:-/app/host}
+    ports:
+      - "${APP_PORT:-8080}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # ⚠️ 老版本 Docker 引擎的环境适配，升级引擎后可删掉这两行（详见 README「Docker 引擎兼容性」）。
+    # 病因：Docker Engine < 20.10.10 的默认 seccomp 白名单里没有 clone3，而且返回的是
+    # EPERM 而非 ENOSYS，导致 Debian trixie（glibc ≥ 2.34）的 pthread_create
+    # 不回退到 clone(2)，一律抛 "can't start new thread"。
+    # 后果：FastAPI 同步端点全 500、容器反复重启、镜像构建时 pip 也会挂。
+    security_opt:
+      - seccomp=${SECCOMP_MODE:-unconfined}
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: ${PGDATA_VOLUME:-reimburse-pgdata}
+  uploads:
+    name: ${UPLOADS_VOLUME:-reimburse-uploads}
+  upgrade:
+    name: ${UPGRADE_VOLUME:-reimburse-upgrade}

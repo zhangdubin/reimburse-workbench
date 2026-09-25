@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# 本地数据库与数据目录
+backend/data/
+*.db
+*.sqlite3
+
+# 环境与配置
+.env
+
+# 安装包产物（几百 MB，随用随打：./deploy/make-package.sh）
+dist/
+
+# 系统
+.DS_Store
+*.log
+
+# 生产备份与本地数据
+backups/
+data/
+uploads/
