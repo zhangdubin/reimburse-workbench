@@ -189,13 +189,35 @@ def _sha256_of(path: str) -> str:
 
 
 def _download(url: str, dest: str, cfg: dict, expect_size: int = 0, label: str = "") -> str:
-    """流式下载 + 边下边算 sha256，返回十六进制摘要。"""
+    """流式下载 + 边下边算 sha256，返回十六进制摘要。
+
+    内网代理到 GitHub 的连接偶尔会「半开」：连上了但一个字节都不来，
+    socket 超时都可能不触发——所以这里带重试（3 次）兜底。
+    """
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".part"
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            return _download_once(url, tmp, dest, cfg, expect_size, label)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < 2:
+                append_log("%s 第 %d 次下载失败（%s），15 秒后重试…"
+                           % (label or "安装包", attempt + 1, exc))
+                time.sleep(15)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    raise last_exc  # type: ignore[misc]
+
+
+def _download_once(url: str, tmp: str, dest: str, cfg: dict, expect_size: int, label: str) -> str:
     h = hashlib.sha256()
     done = 0
     started = time.time()
-    with uc.open_asset_stream(url, cfg, timeout=120) as resp, open(tmp, "wb") as fh:
+    with uc.open_asset_stream(url, cfg, timeout=45) as resp, open(tmp, "wb") as fh:
         total = int(resp.headers.get("Content-Length") or 0) or expect_size
         while True:
             chunk = resp.read(1024 * 256)
@@ -211,6 +233,8 @@ def _download(url: str, dest: str, cfg: dict, expect_size: int = 0, label: str =
                     speed = done / max(time.time() - started, 0.1) / 1048576.0
                     write_status(progress=round(done / total, 4),
                                  message="正在下载 %s %.0f%%（%.1f MB/s）" % (label or "", pct, speed))
+    if total and done < total:
+        raise RuntimeError("下载不完整（%d/%d 字节）" % (done, total))
     os.replace(tmp, dest)
     return h.hexdigest()
 
