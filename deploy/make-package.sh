@@ -89,7 +89,7 @@ tar -cf - \
   --exclude='data' --exclude='backups' --exclude='dist' --exclude='node_modules' \
   --exclude='.git' --exclude='images' --exclude='tools' \
   --exclude='deploy/make-package.sh' \
-  Dockerfile docker-compose.yml .env.example backend frontend deploy 2>/dev/null \
+  Dockerfile docker-compose.yml .env.example .dockerignore backend frontend deploy 2>/dev/null \
   | ( cd "${PKG}" && tar -xf - )
 ok "源码已复制"
 

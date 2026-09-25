@@ -18,3 +18,5 @@ tools/
 # 但每轮构建都会把整个上下文传给 daemon —— 这两个目录常有 1 GB+，白白拖慢每次 build。
 dist/
 backups/
+images/
+# 离线安装包内导出的镜像 tar（几百 MB）同理，只用于 docker load，不进构建上下文
