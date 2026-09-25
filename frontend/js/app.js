@@ -19,6 +19,7 @@ WB.views = WB.views || {};
     spark: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/>',
     update: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
     scan: '<path d="M3 8V5.5A2.5 2.5 0 0 1 5.5 3H8M16 3h2.5A2.5 2.5 0 0 1 21 5.5V8M21 16v2.5a2.5 2.5 0 0 1-2.5 2.5H16M8 21H5.5A2.5 2.5 0 0 1 3 18.5V16"/><path d="M3.5 12h17"/>',
+    backup: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
   };
 
   /* perm 为空表示所有已登录用户可见。
@@ -38,6 +39,7 @@ WB.views = WB.views || {};
     { key: 'audit', name: '操作审计', short: '审计', icon: 'shield', group: '系统管理', perm: 'admin.audit' },
     /* hidden：可路由（#/upgrade）但不进侧边栏 / 手机标签栏——入口在右上角用户菜单 */
     { key: 'upgrade', name: '系统更新', short: '更新', icon: 'update', group: '系统管理', perm: 'admin.settings.write', hidden: true },
+    { key: 'backup', name: '数据备份', short: '备份', icon: 'backup', group: '系统管理', perm: 'admin.settings.write', hidden: true },
   ];
 
   const LEGACY = { reimbursements_view: 'reimbursements' };
@@ -145,6 +147,7 @@ WB.views = WB.views || {};
       </div>
       <div class="um-item" data-act="pwd">修改密码</div>
       ${WB.auth.can('admin.settings.write') ? '<div class="um-item" data-act="upgrade">系统更新</div>' : ''}
+      ${WB.auth.can('admin.settings.write') ? '<div class="um-item" data-act="backup">数据备份</div>' : ''}
       <div class="um-item um-danger" data-act="logout">退出登录</div>`;
     document.body.appendChild(el);
 
@@ -169,6 +172,13 @@ WB.views = WB.views || {};
       upgItem.onclick = () => {
         el.remove();
         WB.go('upgrade');
+      };
+    }
+    const bkpItem = el.querySelector('[data-act="backup"]');
+    if (bkpItem) {
+      bkpItem.onclick = () => {
+        el.remove();
+        WB.go('backup');
       };
     }
     el.querySelector('[data-act="logout"]').onclick = async () => {

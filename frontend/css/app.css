@@ -1185,3 +1185,70 @@ table.kv td:last-child { white-space: nowrap; }
 table.kv td:last-child .btn + .btn { margin-left: 6px; }
 /* 掩码提示与输入框同行排布，不另起一行 */
 table.kv td .hint { display: inline; margin-left: 8px; }
+
+/* ---------------- 数据备份（v2.9.13+） ---------------- */
+.bk-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.bk-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.bk-sub { color: var(--text-2); font-size: var(--fs-sm); margin-top: 4px; }
+.bk-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px; padding: 14px 16px;
+}
+.bk-stat { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.bk-stat-l { font-size: var(--fs-xs); color: var(--text-2); }
+.bk-stat-v { font-size: var(--fs-base); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bk-stat-v .muted { color: var(--text-2); font-style: italic; }
+.bk-chip { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: var(--fs-sm); border: 1px solid var(--border-strong); background: #fff; }
+.bk-chip.ok { color: var(--success); border-color: var(--success); background: var(--success-weak); }
+.bk-chip.err { color: var(--danger); border-color: var(--danger); background: var(--danger-weak); }
+.bk-chip.muted { color: var(--text-2); }
+
+.bk-last { padding: 14px 16px; }
+.bk-last-h { font-size: var(--fs-sm); color: var(--text-2); margin-bottom: 6px; }
+.bk-last-name { font-weight: 600; margin-bottom: 10px; word-break: break-all; }
+.bk-last-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 16px;
+  font-size: var(--fs-sm); color: var(--text);
+}
+.bk-last-grid b { color: var(--text-2); font-weight: 500; margin-right: 6px; }
+.bk-last.err .bk-last-grid b { color: var(--danger); }
+.bk-last-meta { margin-top: 10px; font-size: var(--fs-xs); color: var(--text-2); }
+
+.bk-actions {
+  display: flex; gap: 10px; padding: 12px 16px;
+  position: sticky; top: 0; z-index: 1; background: inherit;
+}
+
+.bk-cfg { padding: 14px 16px; }
+.bk-h { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text); }
+.bk-cfg-list { display: flex; flex-direction: column; gap: 10px; }
+.bk-cfg-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2);
+  gap: 12px;
+}
+.bk-cfg-l { flex: 1; min-width: 0; }
+.bk-cfg-label { color: var(--text); font-size: var(--fs-sm); }
+.bk-cfg-r { display: flex; align-items: center; gap: 8px; }
+.bk-input {
+  height: 28px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  font-size: var(--fs-sm); font-family: inherit; min-width: 180px;
+}
+.bk-input:focus { outline: none; box-shadow: var(--ring); border-color: var(--primary); }
+/* 复用 settings 的 switch 样式 */
+.bk-cfg-row .switch { transform: scale(.85); }
+
+.bk-list { padding: 14px 16px; }
+.bk-list-block { margin-bottom: 14px; }
+.bk-list-block:last-child { margin-bottom: 0; }
+.bk-list-h { font-size: var(--fs-sm); font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.bk-item {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  margin-bottom: 6px; background: var(--panel-2);
+}
+.bk-item-name { font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bk-item-meta { color: var(--text-2); font-size: var(--fs-xs); white-space: nowrap; }
+.bk-item-act { display: flex; gap: 6px; }
+
+.bk-empty { padding: 28px 16px; text-align: center; color: var(--text-2); }

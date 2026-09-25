@@ -41,6 +41,7 @@ from .routers import (
     ai as ai_router,
     attachments,
     auth,
+    backup,
     inbox,
     invoices,
     master,
@@ -54,7 +55,7 @@ from .routers import (
 from .seed import ensure_seed
 
 APP_NAME = "销售费用报销管理工作台"
-APP_VERSION = "2.9.12"
+APP_VERSION = "2.9.13"
 
 FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", Path(__file__).resolve().parents[2] / "frontend"))
 
@@ -153,6 +154,68 @@ async def _upgrade_loop() -> None:
         await asyncio.sleep(max(hours, 0.25) * 3600)
 
 
+# ---------- 数据备份：周期备份循环（v2.9.13+） ----------
+
+def _auto_backup() -> None:
+    """跑一次 do_backup + 裁剪，异常只记日志，绝不阻塞主进程。"""
+    from . import backup as bk_mod
+    db = SessionLocal()
+    try:
+        result = bk_mod.do_backup(db, label="auto")
+        # 跑完顺手裁剪两端，避免长期运行把盘塞满
+        bk_mod.prune(db)
+        print(
+            f"[backup] 自动备份完成：{result.name}  "
+            f"大小={result.size // 1024} KB  "
+            f"表行数={result.table_rows}  "
+            f"上传文件={result.uploaded_files}  "
+            f"耗时={result.elapsed_seconds:.1f}s"
+        )
+        if result.remote_error:
+            print(f"[backup] 复制到外挂目录失败（本地包仍可用）：{result.remote_error}")
+    except Exception as exc:  # noqa: BLE001
+        # 失败也要落 setting，让前端能看到上次失败原因
+        try:
+            db.rollback()
+            row = db.get(m.Setting, "backup_last_result")
+            payload = json.dumps({
+                "ok": False, "error": f"{type(exc).__name__}: {exc}",
+                "finished_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+            }, ensure_ascii=False)
+            if row:
+                row.value = payload
+            else:
+                db.add(m.Setting(key="backup_last_result", value=payload,
+                                 remark="最近一次备份结果（成功/失败/大小/sha）"))
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+        print(f"[backup] 自动备份失败：{exc!r}")
+    finally:
+        db.close()
+
+
+async def _backup_loop() -> None:
+    """每隔 backup_interval_hours 小时跑一次备份。最短 15 分钟，避免大库连跑。"""
+    import json
+    while True:
+        # 每次循环开头读最新配置（运营可在线改）
+        try:
+            db = SessionLocal()
+            try:
+                _, _, _, _, hours, _ = __import__("app.backup", fromlist=["_resolved_paths"])._resolved_paths(db)
+            finally:
+                db.close()
+        except Exception:  # noqa: BLE001
+            hours = 24.0
+        interval = max(float(hours or 24.0), 0.25)  # 至少 15 分钟
+        await asyncio.sleep(interval * 3600)
+        try:
+            await asyncio.to_thread(_auto_backup)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[backup] 周期任务异常：{exc!r}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1) 结构升级：失败必须让容器起不来，否则会带着错误结构对外服务
@@ -194,11 +257,37 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[upgrade] 初始化在线升级检查失败（忽略）：{exc!r}")
 
+    # 6) 数据备份（v2.9.13+）：可选启动期立即一次 + 按配置周期备份
+    backup_task = None
+    try:
+        from . import backup as _bk
+        _db = SessionLocal()
+        try:
+            _bd, _rd, _kl, _kr, _hours, _at_boot = _bk._resolved_paths(_db)
+            _bd.mkdir(parents=True, exist_ok=True)
+            print(
+                f"[boot] 数据备份：周期={_hours}h 本地={_bd} "
+                f"外挂={_rd or '(未启用)'} 保留={_kl}/{_kr} 启动即备份={_at_boot}"
+            )
+        finally:
+            _db.close()
+        if _at_boot:
+            # 启动期一次性：放后台线程跑，不阻塞启动；失败只记日志
+            asyncio.get_event_loop().run_in_executor(None, _auto_backup) if False else None
+            import threading
+            threading.Thread(target=_auto_backup, daemon=True, name="backup-boot").start()
+            print("[boot] 数据备份：启动期一次性备份已在后台启动")
+        if float(_hours) > 0:
+            backup_task = asyncio.create_task(_backup_loop())
+            print(f"[boot] 数据备份：周期任务已开启（每 {_hours} 小时一次）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[backup] 初始化周期备份失败（忽略）：{exc!r}")
+
     print(f"[boot] 静态资源目录：{FRONTEND_DIR} (exists={FRONTEND_DIR.exists()})")
     print(f"[boot] 跨域白名单：{CORS_ORIGINS or '（同源，未开启）'}")
     print(f"[boot] 数据库版本：{current_revision()}")
     yield
-    for _t in (task, upgrade_task):
+    for _t in (task, upgrade_task, backup_task):
         if _t:
             _t.cancel()
             with suppress(asyncio.CancelledError):
@@ -260,6 +349,7 @@ app.include_router(print_qr.router)
 app.include_router(jev_config.router)
 app.include_router(scan.router)
 app.include_router(upgrade.router)
+app.include_router(backup.router)
 
 
 @app.get("/api/health", tags=["系统"])

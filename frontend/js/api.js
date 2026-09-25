@@ -194,6 +194,21 @@ window.WB = window.WB || {};
     aiBookkeeping: (b) => api.post('/api/ai/bookkeeping', b),
     aiActions: () => api.get('/api/ai/actions'),
 
+    /* 数据备份（admin） */
+    backupStatus: () => api.get('/api/admin/backup/status'),
+    backupList: (which) => api.get('/api/admin/backup/list', which ? { which } : null),
+    backupRun: () => api.post('/api/admin/backup/run', {}),
+    backupPrune: () => api.post('/api/admin/backup/prune', {}),
+    backupRestore: (source) => api.post('/api/admin/backup/restore', { source, confirm: true }),
+    backupUploadRestore: (file) => {
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      return raw('POST', '/api/admin/backup/upload-restore?confirm=true', { body: fd }).then((r) => r.json());
+    },
+    backupSetConfig: (key, value) => api.put(`/api/admin/backup/config/${encodeURIComponent(key)}`, { value }),
+    backupDelConfig: (key) => api.del(`/api/admin/backup/config/${encodeURIComponent(key)}`),
+    backupDownloadUrl: (name) => `/api/admin/backup/download/${encodeURIComponent(name)}`,
+
     /* 批量删除与清空（危险操作，后端还会再要一次确认词） */
     batchDelete: (res, ids) => api.post(`/api/${res}/batch-delete`, { ids }),
     batchDeleteInvoices: (ids) => api.post('/api/invoices/batch-delete', { ids }),

@@ -139,6 +139,41 @@ window.WB = window.WB || {};
     });
   };
 
+  /* 输入弹窗：要求用户输入字符串。空 = 取消。focus 到输入框，回车提交。 */
+  U.prompt = function (message, defaultValue = '', { title = '请输入', placeholder = '', confirmText = '确定', danger = false } = {}) {
+    return new Promise((resolve) => {
+      let done = false;
+      const m = U.modal({
+        title,
+        width: 420,
+        body: `<p class="confirm-msg">${message}</p>
+               <input class="bk-input" id="prompt-input" style="width:100%;margin-top:8px" value="${U.esc(defaultValue)}" placeholder="${U.esc(placeholder)}" />`,
+        footer: `<button class="btn" data-close>取消</button>
+                 <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-ok>${U.esc(confirmText)}</button>`,
+        onMount(api) {
+          const inp = U.qs('#prompt-input', api.el);
+          setTimeout(() => { inp.focus(); inp.select(); }, 50);
+          const submit = () => {
+            done = true;
+            const v = inp.value;
+            api.close();
+            resolve(v);
+          };
+          U.qs('[data-ok]', api.el).onclick = submit;
+          inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+          api.el.addEventListener('click', (e) => {
+            if (e.target === api.el) resolve(null);
+          });
+        },
+      });
+      const origClose = m.close;
+      m.close = function () {
+        if (!done) resolve(null);
+        origClose.call(m);
+      };
+    });
+  };
+
   /* ---------------- 表单辅助 ---------------- */
   U.serialize = (form) => {
     const out = {};
