@@ -36,7 +36,7 @@ WB.views = WB.views || {};
       label: '包含预发布版', switch: true, help: 'beta / rc 版本也提示升级',
     },
     upgrade_require_manifest: {
-      label: '必须校验清单', switch: true,
+      label: '必须校验清单', switch: true, defaultOn: true,
       help: 'Release 缺 manifest.json 时拒绝一键升级（推荐开启）',
     },
   };
@@ -167,10 +167,13 @@ WB.views = WB.views || {};
       const id = 'ug-cfg-' + it.key;
       let field;
       if (spec.switch) {
+        /* 开关初值与后端口径一致：defaultOn 的项（如必须校验清单）
+           在「从未设置」时后端按开启处理，UI 也要显示开启 */
+        const on = spec.defaultOn ? String(it.value) !== '0' : String(it.value) === '1';
         field = `<label class="set-toggle">
-            <input type="checkbox" id="${id}" data-key="${it.key}" ${String(it.value) === '1' ? 'checked' : ''}>
+            <input type="checkbox" id="${id}" data-key="${it.key}" ${on ? 'checked' : ''}>
             <span class="tk"></span>
-            <span class="tk-text">${String(it.value) === '1' ? '已开启' : '已关闭'}</span></label>`;
+            <span class="tk-text">${on ? '已开启' : '已关闭'}</span></label>`;
       } else {
         field = `<div class="input-unit">
             <input type="${spec.secret ? 'password' : 'text'}" id="${id}" data-key="${it.key}"
