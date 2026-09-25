@@ -19,6 +19,11 @@ dist/
 # 系统
 .DS_Store
 *.log
+._*
+
+# 在线升级骨架包回拷到项目根的安装目录布局文件（deploy/ 下才有正主）
+/VERSION
+/install.sh
 
 # 生产备份与本地数据
 backups/
