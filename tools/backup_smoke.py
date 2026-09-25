@@ -112,7 +112,8 @@ def main() -> int:
         with tf.extractfile("manifest.json") as f:
             manifest = json.loads(f.read().decode())
     check("app == reimburse-workbench", manifest.get("app") == "reimburse-workbench")
-    check("app_version == 2.9.12", manifest.get("app_version") == "2.9.12")
+    check(f"app_version == {__import__('app.main', fromlist=['APP_VERSION']).APP_VERSION}",
+          manifest.get("app_version") == __import__('app.main', fromlist=['APP_VERSION']).APP_VERSION)
     check("engine_driver == sqlite", manifest.get("engine_driver") == "sqlite")
     check("含 components.db.sha256", "db" in manifest.get("components", {}))
     check("db.rows > 0", manifest["components"]["db"]["rows"] > 0)
