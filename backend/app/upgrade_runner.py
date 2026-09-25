@@ -119,8 +119,21 @@ def append_log(message: str) -> None:
 
 
 def busy() -> bool:
-    phase = (read_status().get("phase") or "idle")
-    return phase in ("downloading", "verifying", "extracting", "switching")
+    st = read_status()
+    phase = st.get("phase") or "idle"
+    if phase not in ("downloading", "verifying", "extracting", "switching"):
+        return False
+    # 兜底：app 容器在升级中途重启会把线程杀死，状态永远停在中间相位——
+    # updated_at 超过 20 分钟没动静就视为陈旧，不再阻塞下一次升级
+    updated = st.get("updated_at") or ""
+    if updated:
+        try:
+            last = time.mktime(time.strptime(updated, "%Y-%m-%d %H:%M:%S"))
+            if time.time() - last > 20 * 60:
+                return False
+        except ValueError:
+            pass
+    return True
 
 
 # ---------- 前置检查 ----------
@@ -158,7 +171,19 @@ def _self_container() -> dict | None:
     me = os.getenv("HOSTNAME") or ""
     if not me:
         return None
-    return dk.container_find(me) or None
+    c = dk.container_find(me)
+    if c:
+        return c
+    # compose 默认不设 hostname，容器里 HOSTNAME 是 12 位短容器 ID——
+    # 按名字找不到时按 ID 前缀回退（docker inspect 接受短 ID），否则一键升级恒失败
+    try:
+        info = dk.container_inspect(me)
+        cid = info.get("Id") or ""
+        if cid:
+            return {"Id": cid}
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _mount_source(container: dict, destination: str) -> str:
@@ -293,6 +318,7 @@ def _start_worker(self_c: dict, target_tag: str, image_tar: str, bundle_ready: b
     }
     body = {
         "Image": my_image,
+        "User": "0:0",   # worker 必须以 root 跑：要写升级卷（app 以 root 写过）+ 连 root-only 的 docker socket
         "Cmd": ["python", "-m", "app.upgrade_worker"],
         "Env": ["%s=%s" % (k, v) for k, v in env.items()],
         "Labels": {

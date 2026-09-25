@@ -55,6 +55,17 @@ def _find_app() -> dict:
     cand = dk.container_find(APP_CONTAINER) if APP_CONTAINER else None
     if cand:
         return cand
+    # UP_APP_CONTAINER 传的是容器内 HOSTNAME：compose 未设 hostname 时它是
+    # 12 位短容器 ID（不是容器名）——按名字找不到时按 ID 前缀回退
+    if APP_CONTAINER:
+        try:
+            info = dk.container_inspect(APP_CONTAINER)
+            cid = info.get("Id") or ""
+            if cid:
+                names = ["/%s" % (info.get("Name") or "").lstrip("/")]
+                return {"Id": cid, "Names": names}
+        except Exception:  # noqa: BLE001
+            pass
     raise RuntimeError("找不到应用容器 %s" % (APP_CONTAINER or "(未传名字)"))
 
 
