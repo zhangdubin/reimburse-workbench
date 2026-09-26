@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import threading
 import time
 
@@ -149,6 +150,80 @@ def host_arch() -> str:
     return machine
 
 
+def _ensure_upgrade_dir_writable() -> tuple[bool, str]:
+    """让 UPGRADE_DIR 可写。返回 (ok, 诊断信息)。
+
+    为什么需要自愈：
+        compose 的命名卷 `upgrade:/app/data/upgrade` 在不同容器实例之间复用，
+        早期实例以 root 写入的子目录对当前 10001 用户只给 r-x，
+        `os.access(..., W_OK)` 就失败。
+        解决办法是当场尽力修复，再把修复动作记到诊断信息里返回。
+    """
+    diag = []
+    try:
+        # 1) 不存在则建
+        if not os.path.exists(UPGRADE_DIR):
+            try:
+                os.makedirs(UPGRADE_DIR, exist_ok=True)
+                diag.append(f"创建了 {UPGRADE_DIR}")
+            except PermissionError as exc:
+                return False, f"目录不存在且无法创建 {UPGRADE_DIR}: {exc}"
+
+        # 2) 当前进程的 uid/gid（升级执行器会拿到一样的）
+        uid, gid = os.getuid(), os.getgid()
+
+        # 3) 逐级往上确认祖先目录属主也是当前 uid/gid（chmod 无法改祖先的属主）
+        ancestors_ok = True
+        path = Path(UPGRADE_DIR)
+        for p in [path] + list(path.parents):
+            if not str(p).startswith("/app/data"):
+                break
+            try:
+                st = os.stat(p)
+            except FileNotFoundError:
+                continue
+            if st.st_uid != uid or st.st_gid != gid:
+                # 尝试 chown（仅当前进程是 root 时能改）
+                if uid == 0:
+                    try:
+                        os.chown(p, uid, gid)
+                        diag.append(f"chown {p} -> {uid}:{gid}")
+                    except (PermissionError, OSError) as exc:
+                        ancestors_ok = False
+                        diag.append(f"chown {p} 失败: {exc}")
+                else:
+                    ancestors_ok = False
+
+        # 4) 自身权限位放宽到 0777（命名卷里通常安全，别处通过 UPGRADE_DIR 隔离）
+        try:
+            cur_mode = os.stat(UPGRADE_DIR).st_mode
+            if cur_mode & 0o777 != 0o777:
+                os.chmod(UPGRADE_DIR, 0o777)
+                diag.append(f"chmod {UPGRADE_DIR} 0o777 (was {oct(cur_mode & 0o777)})")
+        except (PermissionError, OSError) as exc:
+            diag.append(f"chmod 失败: {exc}")
+
+        # 5) 试写一个临时文件（这是真正的判定）
+        probe = os.path.join(UPGRADE_DIR, ".__upgrade_write_probe__")
+        try:
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.unlink(probe)
+        except (PermissionError, OSError) as exc:
+            return False, (
+                f"修复失败：当前进程 uid={uid} gid={gid} 仍然写不进 {UPGRADE_DIR}（{exc}）。"
+                + " | ".join(diag)
+                + ("" if ancestors_ok else
+                   " | 祖先目录属主不是当前用户，且本进程不是 root，无法 chown——"
+                   "请在宿主机执行：docker run --rm -v reimburse-upgrade:/data alpine "
+                   "sh -c 'chmod -R 777 /data'，或在 .env 里设 APP_USER=0:0 让容器跑 root。")
+            )
+
+        return True, " | ".join(diag) if diag else "可写"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"修复异常：{exc} | " + " | ".join(diag)
+
+
 def preflight(db=None) -> list:
     """返回阻塞项列表（空 = 可以升级）。"""
     problems = []
@@ -161,7 +236,12 @@ def preflight(db=None) -> list:
     if busy():
         problems.append("已有一次升级正在进行中")
     if not os.access(UPGRADE_DIR, os.W_OK):
-        problems.append("升级目录不可写：%s" % UPGRADE_DIR)
+        # 触发了就自愈：很可能命名卷历史子目录属主不一致
+        fixed, detail = _ensure_upgrade_dir_writable()
+        if fixed:
+            print(f"[upgrade] 自动修复升级目录权限：{detail}")
+        else:
+            problems.append("升级目录不可写：%s（已尝试自愈，仍失败：%s）" % (UPGRADE_DIR, detail))
     return problems
 
 

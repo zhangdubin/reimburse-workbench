@@ -408,6 +408,25 @@ for cname in "${APP_CONTAINER}" "${DB_CONTAINER}"; do
   fi
 done
 
+# 提前创建 UPGRADE_VOLUME 并把权限放宽（关键预防）：
+# 这卷在不同容器实例之间复用，旧实例若以 root 写过子目录，
+# 当前 10001:10001 用户读不到写不进（permission denied），
+# 一键升级会卡在「升级目录不可写」。先以本容器 UID/GID 创建并 chmod 777 兜底。
+if [[ -n "${UPGRADE_VOLUME:-}" ]]; then
+  if ! docker volume inspect "${UPGRADE_VOLUME}" >/dev/null 2>&1; then
+    docker volume create "${UPGRADE_VOLUME}" >/dev/null
+    ok "创建升级卷 ${UPGRADE_VOLUME}"
+  fi
+  # 拿一个临时 root 容器把权限放宽到 777——命名卷里通常安全，
+  # 对挂载点和已有子目录递归都设
+  docker run --rm \
+    -v "${UPGRADE_VOLUME}:/upgrade" \
+    --user root \
+    alpine:latest \
+    sh -c 'chmod -R 777 /upgrade 2>/dev/null; mkdir -p /upgrade && chmod 777 /upgrade' \
+    >/dev/null 2>&1 || warn "放宽升级卷权限失败（不影响安装；如一键升级报'升级目录不可写'再手动修）"
+fi
+
 compose_run up -d
 
 say "  等待服务就绪（首次启动要跑数据库迁移）…"
