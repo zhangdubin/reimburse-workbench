@@ -21,8 +21,9 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 def alembic_config() -> Config:
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
-    # env.py 也会再读一次环境变量，这里显式设置保证优先级最高
-    cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+    # 注意：不写 sqlalchemy.url —— 密码里的 % 会触发 configparser 插值错误。
+    # env.py 直接读环境变量 DATABASE_URL 并用 app 已经 create_engine 的 engine，
+    # 规避 alembic configparser 这一层。
     return cfg
 
 

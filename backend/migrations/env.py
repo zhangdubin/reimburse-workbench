@@ -23,7 +23,6 @@ from app.database import Base, DATABASE_URL  # noqa: E402
 from app import models  # noqa: E402,F401  必须导入，autogenerate 才能看到全部表
 
 config = context.config
-config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -45,12 +44,11 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    section = config.get_section(config.config_ini_section) or {}
-    section["sqlalchemy.url"] = DATABASE_URL
-    connectable = engine_from_config(
-        section, prefix="sqlalchemy.", poolclass=pool.NullPool
-    )
-    with connectable.connect() as connection:
+    # 不走 alembic configparser 写 sqlalchemy.url——密码里有 % 或 @ 会被
+    # configparser 当插值或被 urlparse 当分隔符错位（v2.9.16 实战验证过）。
+    # 直接用 app 已经 create_engine 好的实例，连过来跑迁移。
+    from app.database import engine
+    with engine.connect() as connection:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
