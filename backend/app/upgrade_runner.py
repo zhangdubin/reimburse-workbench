@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from . import docker_api as dk
 from . import upgrade_client as uc
