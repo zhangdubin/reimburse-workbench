@@ -48,7 +48,7 @@ services:
         # 1 = 装本地 OCR（图片型发票必需，约 300MB）；0 = 瘦身镜像，
         # 拍照件/扫描件退回人工补录，服务功能不受影响
         INSTALL_OCR: ${INSTALL_OCR:-1}
-    image: reimburse-workbench:${IMAGE_TAG:-2.9.16}
+    image: reimburse-workbench:${IMAGE_TAG:-2.9.17}
     container_name: ${APP_CONTAINER:-reimburse-app}
     environment:
       DATABASE_URL: postgresql+psycopg://${DB_USER:-workbench}:${DB_PASSWORD:-workbench123}@db:5432/${DB_NAME:-workbench}

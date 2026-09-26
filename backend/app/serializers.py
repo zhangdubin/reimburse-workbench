@@ -22,7 +22,29 @@ def dt_s(v):
 
 
 def department_out(o: m.Department) -> dict:
-    return {"id": o.id, "name": o.name, "code": o.code, "manager": o.manager, "remark": o.remark}
+    return {
+        "id": o.id,
+        "name": o.name,
+        "code": o.code,
+        "parent_id": o.parent_id,
+        "parent_name": o.parent.name if o.parent else None,
+        "manager": o.manager,
+        "cost_center": o.cost_center,
+        "is_active": o.is_active,
+        "description": o.description,
+        "remark": o.remark,
+        "employee_count": len(o.employees) if o.employees is not None else 0,
+    }
+
+
+def _id_card_masked(s: str | None) -> str | None:
+    """身份证/银行卡号一律打码；详情页 admin 可以 `unmask` 端点单独取。"""
+    if not s:
+        return None
+    n = len(s)
+    if n <= 8:
+        return "*" * n
+    return s[:4] + "*" * (n - 8) + s[-4:]
 
 
 def employee_out(o: m.Employee) -> dict:
@@ -34,10 +56,18 @@ def employee_out(o: m.Employee) -> dict:
         "department_name": o.department.name if o.department else None,
         "position": o.position,
         "level": o.level,
+        "gender": o.gender,
+        "birthday": date_s(o.birthday),
+        "hire_date": date_s(o.hire_date),
+        "resign_date": date_s(o.resign_date),
+        "id_card_masked": _id_card_masked(o.id_card),
+        "address": o.address,
+        "emergency_contact": o.emergency_contact,
         "email": o.email,
         "phone": o.phone,
         "bank_account": o.bank_account,
         "active": o.active,
+        "remark": o.remark,
     }
 
 
@@ -51,6 +81,8 @@ def category_out(o: m.ExpenseCategory) -> dict:
         "single_limit": money(o.single_limit),
         "daily_limit": money(o.daily_limit),
         "monthly_limit": money(o.monthly_limit),
+        "tax_rate": money(o.tax_rate),
+        "acc_subject": o.acc_subject,
         "active": o.active,
         "remark": o.remark,
     }
@@ -64,6 +96,10 @@ def customer_out(o: m.Customer) -> dict:
         "contact": o.contact,
         "phone": o.phone,
         "industry": o.industry,
+        "tax_no": o.tax_no,
+        "address": o.address,
+        "website": o.website,
+        "bank_info": o.bank_info,
         "remark": o.remark,
     }
 
@@ -78,6 +114,9 @@ def project_out(o: m.Project) -> dict:
         "manager": o.manager,
         "stage": o.stage,
         "status": o.status,
+        "start_date": date_s(o.start_date),
+        "end_date": date_s(o.end_date),
+        "remark": o.remark,
     }
 
 

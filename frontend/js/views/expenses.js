@@ -105,6 +105,12 @@ WB.views = WB.views || {};
           input = `<label style="display:flex;align-items:center;gap:6px;height:30px"><input type="checkbox" id="ef-${f.key}" ${v ? 'checked' : ''}> ${U.esc(f.hint || '')}</label>`;
         } else if (f.type === 'number') {
           input = `<input type="number" step="0.01" id="ef-${f.key}" value="${v == null ? '' : v}">`;
+        } else if (f.type === 'textarea') {
+          const rows = f.rows || 2;
+          input = `<textarea id="ef-${f.key}" rows="${rows}">${U.esc(v == null ? '' : v)}</textarea>`;
+        } else if (f.type === 'date') {
+          // v2.9.17：日期 input；浏览器 native picker
+          input = `<input type="date" id="ef-${f.key}" value="${U.esc(v == null ? '' : v)}">`;
         } else {
           input = `<input type="text" id="ef-${f.key}" value="${U.esc(v == null ? '' : v)}">`;
         }
@@ -521,7 +527,31 @@ WB.views = WB.views || {};
   }
 
   /* ---------------- 基础数据 ---------------- */
+  /* 部门（v2.9.17 起补齐 parent_id / cost_center / is_active / description） */
   const BASE_CONF = {
+    department: {
+      res: 'departments', title: '部门', label: 'name',
+      fields: [
+        { key: 'name', label: '部门名称', required: true, full: true },
+        { key: 'code', label: '部门编码' },
+        { key: 'parent_id', label: '上级部门', type: 'select', options: () => WB.meta.departments, hint: '不选则为顶级部门' },
+        { key: 'manager', label: '负责人', hint: '填员工姓名或工号（自由文本）' },
+        { key: 'cost_center', label: '成本中心', hint: '财务预算/费用归集用' },
+        { key: 'is_active', label: '启用', type: 'checkbox', hint: '停用后不在新增报销单的下拉里出现', full: true },
+        { key: 'description', label: '部门描述', type: 'textarea', full: true, rows: 2 },
+        { key: 'remark', label: '备注', full: true, type: 'textarea', rows: 2 },
+      ],
+      cols: ['部门名称', '编码', '上级', '负责人', '成本中心', '人员数', '状态'],
+      row: (d) => [
+        U.esc(d.name),
+        `<span class="mono muted">${U.esc(d.code || '—')}</span>`,
+        U.esc(d.parent_name || '—'),
+        U.esc(d.manager || '—'),
+        `<span class="mono muted">${U.esc(d.cost_center || '—')}</span>`,
+        `<span class="badge b-blue">${d.employee_count ?? 0}</span>`,
+        d.is_active ? '<span class="badge b-green">启用</span>' : '<span class="badge b-gray">停用</span>',
+      ],
+    },
     customer: {
       res: 'customers', title: '客户', label: 'name',
       fields: [
@@ -530,7 +560,11 @@ WB.views = WB.views || {};
         { key: 'industry', label: '所属行业' },
         { key: 'contact', label: '联系人' },
         { key: 'phone', label: '联系电话' },
-        { key: 'remark', label: '备注', full: true },
+        { key: 'tax_no', label: '税号', hint: '增值税开票用' },
+        { key: 'address', label: '通讯地址', type: 'textarea', full: true, rows: 2 },
+        { key: 'website', label: '官网' },
+        { key: 'bank_info', label: '收款银行', full: true, hint: '格式：XX银行 XX支行 6228... ' },
+        { key: 'remark', label: '备注', full: true, type: 'textarea', rows: 2 },
       ],
       cols: ['名称', '编码', '行业', '联系人', '电话'],
       row: (c) => [U.esc(c.name), `<span class="mono muted">${U.esc(c.code || '—')}</span>`, U.esc(c.industry || '—'), U.esc(c.contact || '—'), U.esc(c.phone || '—')],
@@ -544,6 +578,9 @@ WB.views = WB.views || {};
         { key: 'manager', label: '项目负责人' },
         { key: 'stage', label: '当前阶段' },
         { key: 'status', label: '状态', type: 'select', options: () => [{ id: '进行中', name: '进行中' }, { id: '已结束', name: '已结束' }], numeric: false },
+        { key: 'start_date', label: '开始日期', type: 'date' },
+        { key: 'end_date', label: '结束日期', type: 'date' },
+        { key: 'remark', label: '项目说明', type: 'textarea', full: true, rows: 2 },
       ],
       cols: ['项目名称', '编码', '客户', '负责人', '阶段', '状态'],
       row: (p) => [
@@ -557,12 +594,19 @@ WB.views = WB.views || {};
       fields: [
         { key: 'name', label: '姓名', required: true },
         { key: 'employee_no', label: '工号', required: true },
-        { key: 'department_id', label: '所属部门', type: 'select', options: () => WB.meta.departments },
+        { key: 'department_id', label: '所属部门', type: 'select', options: () => WB.meta.departments, required: true },
         { key: 'position', label: '职位' },
         { key: 'level', label: '职级' },
+        { key: 'gender', label: '性别', type: 'select', options: () => [{ id: '男', name: '男' }, { id: '女', name: '女' }], numeric: false },
+        { key: 'birthday', label: '生日', type: 'date' },
+        { key: 'hire_date', label: '入职日期', type: 'date' },
+        { key: 'resign_date', label: '离职日期', type: 'date' },
         { key: 'email', label: '邮箱' },
         { key: 'phone', label: '手机号' },
+        { key: 'id_card', label: '身份证号', hint: '列表显示为打码值，详情 admin 可查完整' },
         { key: 'bank_account', label: '收款账号' },
+        { key: 'address', label: '通讯地址', type: 'textarea', full: true, rows: 2 },
+        { key: 'emergency_contact', label: '紧急联系人', full: true, hint: '格式：姓名 / 电话' },
         { key: 'active', label: '在职', type: 'checkbox', hint: '在职（可选为申请人）' },
       ],
       cols: ['姓名', '工号', '部门', '职位', '职级', '手机号', '状态'],

@@ -60,21 +60,49 @@ LEVEL_TWO = 2
 
 
 class Department(Base):
-    """部门"""
+    """部门（v2.9.17 起支持父子层级、成本中心、启用状态）"""
 
     __tablename__ = "department"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True)
     code: Mapped[str | None] = mapped_column(String(32), unique=True, default=None)
+    # v2.9.17：父子层级（顶级部门 parent_id=NULL；递归 delete 时先挪走 children 防止破坏外键）
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("department.id"), default=None)
+    # 部门负责人（v2.9.17 字段保留并加注释：原为姓名字符串，后续想升级为 employee_id 走迁移）
     manager: Mapped[str | None] = mapped_column(String(32), default=None)
+    # 成本中心编码：财务侧做预算/费用归集时常需要
+    cost_center: Mapped[str | None] = mapped_column(String(32), default=None)
+    # 启用状态：软删除，删除部门前的互斥校验需要
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    description: Mapped[str | None] = mapped_column(Text, default=None)
     remark: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
-    employees: Mapped[list["Employee"]] = relationship(back_populates="department")
+    # forward reference 用字符串避免 Employee 还没定义的解析问题
+    employees: Mapped[list["Employee"]] = relationship(
+        "Employee", back_populates="department", foreign_keys="Employee.department_id",
+    )
+    # 自引用父子层级：v2.9.17 起仅 viewonly 单边，避免 SA 在自引用上反复推方向
+    # 写 parent_id 走 service 层（路由侧 update），不通过 ORM
+    children: Mapped[list["Department"]] = relationship(
+        "Department",
+        primaryjoin="Department.parent_id == Department.id",
+        foreign_keys="Department.parent_id",
+        viewonly=True,
+    )
+    parent: Mapped["Department | None"] = relationship(
+        "Department",
+        primaryjoin="Department.id == foreign(Department.parent_id)",
+        foreign_keys="Department.parent_id",
+        viewonly=True,
+    )
 
 
 class Employee(Base):
-    """员工（报销申请人 / 审批人）"""
+    """员工（报销申请人 / 审批人，v2.9.17 起加详细人事字段）"""
 
     __tablename__ = "employee"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -83,17 +111,29 @@ class Employee(Base):
     department_id: Mapped[int | None] = mapped_column(ForeignKey("department.id"), default=None)
     position: Mapped[str | None] = mapped_column(String(64), default=None)
     level: Mapped[str | None] = mapped_column(String(16), default=None)
+    # v2.9.17：人事扩展字段
+    gender: Mapped[str | None] = mapped_column(String(8), default=None)        # 男/女/未知
+    birthday: Mapped[date | None] = mapped_column(Date, default=None)
+    hire_date: Mapped[date | None] = mapped_column(Date, default=None)
+    resign_date: Mapped[date | None] = mapped_column(Date, default=None)
+    id_card: Mapped[str | None] = mapped_column(String(32), default=None)     # 存明文但 list/serializer 永远打码
+    address: Mapped[str | None] = mapped_column(String(255), default=None)
+    emergency_contact: Mapped[str | None] = mapped_column(String(64), default=None)  # 「姓名 / 电话」一栏写完
     email: Mapped[str | None] = mapped_column(String(128), default=None)
     phone: Mapped[str | None] = mapped_column(String(32), default=None)
     bank_account: Mapped[str | None] = mapped_column(String(64), default=None)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    remark: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
-    department: Mapped["Department | None"] = relationship(back_populates="employees")
+    department: Mapped["Department | None"] = relationship(back_populates="employees", foreign_keys=[department_id])
 
 
 class ExpenseCategory(Base):
-    """费用类型（费用管理主数据）"""
+    """费用类型（v2.9.17 起加税率、会计科目）"""
 
     __tablename__ = "expense_category"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -104,13 +144,19 @@ class ExpenseCategory(Base):
     single_limit: Mapped[float] = mapped_column(MONEY, default=0)  # 单笔限额，0=不限
     daily_limit: Mapped[float] = mapped_column(MONEY, default=0)  # 单人单日限额
     monthly_limit: Mapped[float] = mapped_column(MONEY, default=0)  # 单人月度限额
+    # v2.9.17：进项税抵扣场景要算税价分离；财务对账要按科目走
+    tax_rate: Mapped[float] = mapped_column(MONEY, default=0)      # 默认 0=免税/不计税
+    acc_subject: Mapped[str | None] = mapped_column(String(64), default=None)  # 会计科目编码
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     remark: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class Customer(Base):
-    """客户"""
+    """客户（v2.9.17 起加税号、地址、官网、银行账号）"""
 
     __tablename__ = "customer"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -119,8 +165,16 @@ class Customer(Base):
     contact: Mapped[str | None] = mapped_column(String(32), default=None)
     phone: Mapped[str | None] = mapped_column(String(32), default=None)
     industry: Mapped[str | None] = mapped_column(String(64), default=None)
+    # v2.9.17：客户基础信息
+    tax_no: Mapped[str | None] = mapped_column(String(32), default=None)       # 税号（增值税开票用）
+    address: Mapped[str | None] = mapped_column(String(255), default=None)
+    website: Mapped[str | None] = mapped_column(String(128), default=None)
+    bank_info: Mapped[str | None] = mapped_column(String(128), default=None)  # 收款银行 / 账号
     remark: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class Project(Base):
@@ -134,7 +188,14 @@ class Project(Base):
     manager: Mapped[str | None] = mapped_column(String(32), default=None)
     stage: Mapped[str | None] = mapped_column(String(32), default=None)
     status: Mapped[str] = mapped_column(String(16), default="进行中")
+    # v2.9.17：项目起止 + 备注
+    start_date: Mapped[date | None] = mapped_column(Date, default=None)
+    end_date: Mapped[date | None] = mapped_column(Date, default=None)
+    remark: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
     customer: Mapped["Customer | None"] = relationship()
 

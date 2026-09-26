@@ -276,7 +276,7 @@ step "准备镜像"
 IMG_SOURCE=""
 
 IMAGE_TAG="$(env_get IMAGE_TAG)"
-[[ -n "${IMAGE_TAG}" ]] || IMAGE_TAG="2.9.16"
+[[ -n "${IMAGE_TAG}" ]] || IMAGE_TAG="2.9.17"
 if [[ -n "${IMAGE_TAG_ARG}" ]]; then
   IMAGE_TAG="${IMAGE_TAG_ARG}"
   set_env IMAGE_TAG "${IMAGE_TAG}"
