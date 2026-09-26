@@ -264,7 +264,7 @@ step "准备镜像"
 IMG_SOURCE=""
 
 IMAGE_TAG="$(env_get IMAGE_TAG)"
-[[ -n "${IMAGE_TAG}" ]] || IMAGE_TAG="2.9.14"
+[[ -n "${IMAGE_TAG}" ]] || IMAGE_TAG="2.9.15"
 if [[ -n "${IMAGE_TAG_ARG}" ]]; then
   IMAGE_TAG="${IMAGE_TAG_ARG}"
   set_env IMAGE_TAG "${IMAGE_TAG}"
@@ -428,6 +428,37 @@ if [[ -n "${UPGRADE_VOLUME:-}" ]]; then
 fi
 
 compose_run up -d
+
+# 接管已有 db 数据卷时把 .env 里的 DB_PASSWORD 同步到存量 workbench 用户
+# 场景：换架构重装（amd64 → arm64）、换机器迁移、多次 install 用同一个卷等
+# ——Postgres 只在卷首次初始化时根据 POSTGRES_PASSWORD 建用户，env 改了不会动存量
+# ——所以 app 容器起不来、循环重启，全是 "password authentication failed"
+# 这一段不等 db 启动完（pg_isready 30s 超时即可），失败也不阻塞：
+#   - 失败大多是 PGDATA_VOLUME 还没初始化（首次装），本来就不需要改
+#   - 真正接管失败也只阻塞登录，不会让服务起不来
+if [[ -n "${PGDATA_VOLUME:-}" ]] && docker volume inspect "${PGDATA_VOLUME}" >/dev/null 2>&1; then
+  DESIRED_DB_PWD="$(env_get DB_PASSWORD)"
+  if [[ -n "${DESIRED_DB_PWD}" && "${DESIRED_DB_PWD}" != "workbench123" ]]; then
+    # 等 db 起来（最多 30s）
+    if docker exec reimburse-db pg_isready -U workbench -d workbench >/dev/null 2>&1; then
+      : # db 已经能用默认密码连 —— 可能在用旧密码
+    fi
+    # 用 .env 里的密码试连一次；能连就说明密码已对齐，跳过
+    if docker exec -e PGPASSWORD="${DESIRED_DB_PWD}" reimburse-db \
+         psql -U workbench -d workbench -c "SELECT 1" >/dev/null 2>&1; then
+      : # 密码已对齐
+    else
+      # 用 postgres 维护连接（peer 认证免密）ALTER USER
+      if docker exec -u postgres reimburse-db \
+           psql -U postgres -d postgres -c "ALTER USER workbench WITH PASSWORD '${DESIRED_DB_PWD}';" >/dev/null 2>&1; then
+        ok "同步 .env DB_PASSWORD → db 数据卷里的 workbench 用户"
+      else
+        warn "同步 DB_PASSWORD 到 db 数据卷失败 —— app 容器可能因密码不匹配反复重启"
+        warn "手动修：docker exec -u postgres -e PGPASSWORD=<旧密码> reimburse-db psql -c \"ALTER USER workbench WITH PASSWORD '<.env 里的 DB_PASSWORD>';\""
+      fi
+    fi
+  fi
+fi
 
 say "  等待服务就绪（首次启动要跑数据库迁移）…"
 HEALTH_URL="http://127.0.0.1:${PORT}/api/health"
