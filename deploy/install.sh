@@ -240,6 +240,18 @@ fi
 if [[ -n "${SOCK_PATH}" ]]; then
   set_env DOCKER_SOCK "${SOCK_PATH}"
   ok "在线升级就绪（Docker socket：${SOCK_PATH}）"
+
+  # 把 socket 的宿主 gid 也写进 .env，compose 会把它加到 app 容器的附属组里。
+  # 宿主的 docker.sock 普遍是 root:docker 660 权限；如果应用容器默认是 10001:10001，
+  # 没有 docker 组，连不上 socket → 升级页报「容器拿不到宿主 Docker」。
+  # 跨主机 docker gid 不一样（Linux 通常 999、但可能 998 或 1001）——只能现场查 stat 取。
+  SOCK_GID="$(stat -c '%g' "${SOCK_PATH}" 2>/dev/null || stat -f '%g' "${SOCK_PATH}" 2>/dev/null || true)"
+  if [[ -n "${SOCK_GID}" && "${SOCK_GID}" =~ ^[0-9]+$ ]]; then
+    set_env DOCKER_GID "${SOCK_GID}"
+    ok "检测到 Docker socket gid=${SOCK_GID}（compose 会把容器加到这个组）"
+  else
+    warn "拿不到 socket 的 gid——compose 会用 fallback ${DOCKER_GID:-999}，可能仍连不上 socket"
+  fi
 else
   warn "没找到 Docker socket：界面里的「一键升级」会不可用（其余功能不受影响）"
 fi
@@ -264,7 +276,7 @@ step "准备镜像"
 IMG_SOURCE=""
 
 IMAGE_TAG="$(env_get IMAGE_TAG)"
-[[ -n "${IMAGE_TAG}" ]] || IMAGE_TAG="2.9.15"
+[[ -n "${IMAGE_TAG}" ]] || IMAGE_TAG="2.9.16"
 if [[ -n "${IMAGE_TAG_ARG}" ]]; then
   IMAGE_TAG="${IMAGE_TAG_ARG}"
   set_env IMAGE_TAG "${IMAGE_TAG}"

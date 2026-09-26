@@ -14,6 +14,7 @@ import http.client
 import json
 import os
 import socket
+import stat
 from typing import Any
 
 DEFAULT_SOCK = "/var/run/docker.sock"
@@ -93,18 +94,65 @@ def request(method: str, path: str, body: Any = None, timeout: float = 30.0,
 
 
 def available() -> tuple[bool, str]:
-    """升级前置检查：socket 通不通。返回 (是否可用, 说明)。"""
+    """升级前置检查：socket 是否可用 + 当前进程是否有权限访问。
+
+    仅 _ping 还不够：Docker socket 普遍 0660，_ping 端点不要求 auth，
+    但只要 access 被拒就 ping 不到 ——所以这里先 list containers 一次
+    （最常用的端点，覆盖大部分权限配置），失败时把 socket 权限位、
+    当前 uid/gid、属组都打印出来，前端能直接看到根因（少了 docker 组）。
+    """
     p = socket_path()
     if not os.path.exists(p):
         return False, "找不到 Docker socket：%s" % p
     if os.path.isdir(p):
-        # 挂载不存在的宿主路径时 Docker 会建出同名目录
         return False, "%s 是目录（宿主上没有这个 socket，请检查 .env 的 DOCKER_SOCK）" % p
+
+    # 0. 看进程对 socket 文件本身的访问权限
+    perm_diag = ""
+    try:
+        st = os.stat(p)
+        mode = stat.S_IMODE(st.st_mode)
+        perm_diag = "socket=%04o uid=%d gid=%d 容器内 uid=%d gid=%d" % (
+            mode, st.st_uid, st.st_gid, os.getuid(), os.getgid(),
+        )
+        # 其他用户 / 同组用户是否有写权限（socket 不读只看写）
+        if not (mode & 0o020):  # group write
+            if not (mode & 0o002):  # other write
+                perm_diag += "（无写位：当前进程需在属组里）"
+    except Exception as exc:  # noqa: BLE001
+        perm_diag = "stat socket 失败：%s" % exc
+
+    # 1. ping（不一定反映权限但先看看通不通）
     try:
         request("GET", "/_ping", timeout=5)
-        return True, "ok"
     except Exception as exc:  # noqa: BLE001
-        return False, "连接 Docker 失败：%s" % exc
+        return False, "连接 Docker socket 失败：%s（%s）" % (exc, perm_diag)
+
+    # 2. 真正列容器（权限不足时这步返回 500/403）
+    try:
+        request("GET", "/containers/json?all=1&limit=1", timeout=8)
+        return True, "ok"
+    except DockerError as exc:
+        if exc.status in (500, 403):
+            hint = ""
+            try:
+                # 探测当前进程是否在 docker 组里（group id 来自宿主的 docker socket）
+                import grp
+                sock_gid = os.stat(p).st_gid
+                try:
+                    grp.getgrgid(sock_gid)
+                    in_docker_group = sock_gid in [g.gr_gid for g in grp.getgrall() if os.getuid() in g.gr_mem] or os.getgid() == sock_gid
+                    hint = "；当前进程不在 socket 的属组（gid=%d）里——compose 没把容器加进 docker 组，或 .env 的 DOCKER_GID 不对" % sock_gid
+                except KeyError:
+                    hint = "；宿主 socket 属组 gid=%d 在容器内不存在——compose 的 DOCKER_GID 应是 %d" % (sock_gid, sock_gid)
+            except Exception:  # noqa: BLE001
+                pass
+            return False, "Docker API 返回 %d：权限不足，无法列容器（%s%s）" % (
+                exc.status, perm_diag, hint,
+            )
+        return False, "Docker API 异常：HTTP %d %s（%s）" % (exc.status, exc.body[:200], perm_diag)
+    except Exception as exc:  # noqa: BLE001
+        return False, "调用 Docker API 失败：%s（%s）" % (exc, perm_diag)
 
 
 def version_info() -> dict:

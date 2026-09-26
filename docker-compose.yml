@@ -48,7 +48,7 @@ services:
         # 1 = 装本地 OCR（图片型发票必需，约 300MB）；0 = 瘦身镜像，
         # 拍照件/扫描件退回人工补录，服务功能不受影响
         INSTALL_OCR: ${INSTALL_OCR:-1}
-    image: reimburse-workbench:${IMAGE_TAG:-2.9.15}
+    image: reimburse-workbench:${IMAGE_TAG:-2.9.16}
     container_name: ${APP_CONTAINER:-reimburse-app}
     environment:
       DATABASE_URL: postgresql+psycopg://${DB_USER:-workbench}:${DB_PASSWORD:-workbench123}@db:5432/${DB_NAME:-workbench}
@@ -135,6 +135,16 @@ services:
     # Docker socket 往往只允许 root 连接（macOS Docker Desktop 实测 755、无组写位），
     # 需在 .env 里设 APP_USER=0:0 —— 等于把宿主 root 权限交给本容器，仅限可信内网。
     user: ${APP_USER:-10001:10001}
+    # 宿主 Docker socket 普遍是 root:docker 0660，应用容器默认 10001:10001
+    # 不在 docker 组，连不上 socket → 升级页报「容器拿不到宿主 Docker」。
+    # install.sh 会把宿主 socket 的 gid 写到 .env 的 DOCKER_GID，default 999 兜底。
+    group_add:
+      - "${DOCKER_GID:-999}"
+    # 显式把 db 主机名指到 172.27.0.2，绕过某些 NAS Container Station
+    # bridge 驱动不给 app 容器分配 IP 的情况（解 db DNS 失败导致
+    # 旧库标记失败反复重启）。覆盖为环境里的 DB_HOST 时也仍生效。
+    extra_hosts:
+      - "db:${DB_HOST:-172.27.0.2}"
     # ⚠️ 老版本 Docker 引擎的环境适配，升级引擎后可删掉这两行（详见 README「Docker 引擎兼容性」）。
     # 病因：Docker Engine < 20.10.10 的默认 seccomp 白名单里没有 clone3，而且返回的是
     # EPERM 而非 ENOSYS，导致 Debian trixie（glibc ≥ 2.34）的 pthread_create
