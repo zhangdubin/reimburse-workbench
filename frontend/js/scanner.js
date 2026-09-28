@@ -22,7 +22,6 @@ WB.views = WB.views || {};
 
   const HISTORY_KEY = 'wb_scan_history';
   const MAX_HISTORY = 12;
-  const MAX_EDGE = 1600; // 手机原图动辄 4000px，先缩到这个边长再解码，快且够用
 
   /* ---------------- ZXing ---------------- */
   function zxingReady() {
@@ -55,18 +54,6 @@ WB.views = WB.views || {};
     });
   }
 
-  /** 等比缩放到长边不超过 max；本身就小则原样返回 */
-  function toCanvas(img, max) {
-    const w = img.naturalWidth || img.width || 0;
-    const h = img.naturalHeight || img.height || 0;
-    const k = Math.min(1, max / Math.max(w, h));
-    const c = document.createElement('canvas');
-    c.width = Math.max(1, Math.round(w * k));
-    c.height = Math.max(1, Math.round(h * k));
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    return c;
-  }
-
   /** canvas → Image（ZXing 的 decodeFromCanvas 在 0.21.x 上识别不稳，统一走 Image） */
   function canvasToImage(canvas) {
     return new Promise((resolve, reject) => {
@@ -78,31 +65,85 @@ WB.views = WB.views || {};
   }
 
   /**
-   * 解码一张图。
+   * 按参数渲染一张候选图。
+   * filter 走 canvas 的 CSS filter（老浏览器不支持时静默忽略，不影响流程）。
+   */
+  function render(img, w, h, opts) {
+    const o = opts || {};
+    const k = o.edge ? Math.min(1, o.edge / Math.max(w, h)) : 1;
+    let sx = 0, sy = 0, sw = w, sh = h;
+    if (o.crop > 0 && o.crop < 1) {
+      sw = Math.round(w * o.crop);
+      sh = Math.round(h * o.crop);
+      sx = Math.round((w - sw) / 2);
+      sy = Math.round((h - sh) / 2);
+    }
+    const cw = Math.max(1, Math.round(sw * k));
+    const ch = Math.max(1, Math.round(sh * k));
+    const rot = ((o.rotate || 0) % 360 + 360) % 360;
+    const c = document.createElement('canvas');
+    if (rot === 90 || rot === 270) { c.width = ch; c.height = cw; } else { c.width = cw; c.height = ch; }
+    const ctx = c.getContext('2d');
+    if (o.filter) ctx.filter = o.filter;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, c.width, c.height);
+    if (rot) {
+      ctx.translate(c.width / 2, c.height / 2);
+      ctx.rotate((rot * Math.PI) / 180);
+      ctx.drawImage(img, sx, sy, sw, sh, -cw / 2, -ch / 2, cw, ch);
+    } else {
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, cw, ch);
+    }
+    return c;
+  }
+
+  /** 候选图序列：按「最可能成功且最便宜」排队 */
+  const F_GRAY = 'grayscale(1) contrast(1.6)';
+  const F_HARD = 'grayscale(1) contrast(2.2) brightness(1.08)';
+
+  function candidates(img, w, h) {
+    const out = [];
+    const add = (o) => out.push(render(img, w, h, o));
+    // 1) 尺度金字塔：小图每个 module 像素少但噪声也少，实测比原图更好解
+    [1600, 1100, 780].forEach((e) => add({ edge: e }));
+    // 2) 去色 + 拉对比度：手机拍单据最常见的「灰蒙蒙」就靠这一档救
+    [1600, 780].forEach((e) => add({ edge: e, filter: F_GRAY }));
+    add({ edge: 520, filter: F_HARD });
+    // 3) 手持歪了 / 单据横着拍
+    [90, 180, 270].forEach((r) => add({ edge: 1100, rotate: r }));
+    // 4) 码在整页照片里占比太小：裁中间出来等于放大
+    add({ edge: 1600, crop: 0.5 });
+    add({ edge: 1600, crop: 0.34, filter: F_GRAY });
+    return out;
+  }
+
+  /**
+   * 解码一张图（v2.9.21 增强）。
    * 注意：不要用 ZXing 的 decodeFromCanvas —— 同样一张 Data Matrix，
    * decodeFromImageElement 能解出来、decodeFromCanvas 却报 NotFound（实测）。
-   * 所以缩放后一律转回 Image 再解。
-   * 顺序：大图先缩（省时间）→ 原图 → 再缩一档（小图识别率反而更高）。
+   * 所以每个候选都转回 Image 再解。
+   *
+   * 解不出来时抛出 LOCAL_FAIL，由调用方把原图发服务端用 libdmtx 兜底。
    */
+  const LOCAL_FAIL = 'LOCAL_FAIL';
+
   async function decodeImage(img) {
     if (!zxingReady()) throw new Error('扫码组件未加载，请刷新页面');
     const reader = new ZXing.BrowserMultiFormatReader(makeHints(), { delayBetweenScanAttempts: 50 });
     const w = img.naturalWidth || img.width || 0;
-    const attempts = [];
-    if (w > MAX_EDGE) attempts.push(toCanvas(img, MAX_EDGE));
-    attempts.push(img);
-    if (w > 1000) attempts.push(toCanvas(img, 1000));
+    const h = img.naturalHeight || img.height || 0;
+    if (!w || !h) throw new Error('图片尺寸异常，请重新拍照');
 
-    for (const a of attempts) {
+    for (const canvas of candidates(img, w, h)) {
       try {
-        const target = a instanceof HTMLCanvasElement ? await canvasToImage(a) : a;
+        const target = await canvasToImage(canvas);
         const r = await reader.decodeFromImageElement(target);
         if (r && r.getText()) return r.getText();
       } catch (_) {
-        /* 换下一种尺寸继续试 */
+        /* 换下一个候选继续试 */
       }
     }
-    throw new Error('没能识别出码图，请靠近一些、让码占满取景框再试');
+    throw new Error(LOCAL_FAIL);
   }
 
   /* ---------------- 历史 ---------------- */
@@ -310,7 +351,18 @@ WB.views = WB.views || {};
       say('正在识别图片…');
       try {
         const img = await fileToImage(file);
-        const text = await decodeImage(img);
+        let text = null;
+        try {
+          text = await decodeImage(img);
+        } catch (e) {
+          // 本地多尺度/多预处理都没解出来 —— 把原图发给服务端，
+          // 用 libdmtx（ISO 参考实现）再来一轮，对糊图/歪图提升明显
+          if ((e && e.message) !== LOCAL_FAIL) throw e;
+          say('本地没认出来，正在用服务端增强识别…');
+          const r = await api.scanDecode(file);
+          if (r && r.found && r.text) text = r.text;
+          else throw new Error((r && r.hint) || '没能识别出码图，请靠近一些、让码占满取景框再试');
+        }
         preview(img);
         const okGo = await handleCode(text, say);
         if (!okGo) say('识别到「' + text + '」，但系统里没有对应记录', 'bad');

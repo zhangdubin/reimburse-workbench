@@ -313,7 +313,8 @@ ${bars.replace(/^/gm, '  ')}
     return '';
   })();
   function dmUrl(payload) {
-    const q = '/api/print/dm?text=' + encodeURIComponent(payload) + '&px=8&shape=square';
+    // border=2：四周留 2 个 module 的静区（ISO 要求 ≥1），贴着别的图案或被裁到边就扫不出来了
+    const q = '/api/print/dm?text=' + encodeURIComponent(payload) + '&px=8&shape=square&border=2';
     return API_ORIGIN ? API_ORIGIN + q : q;
   }
 
@@ -515,7 +516,9 @@ ${bars.replace(/^/gm, '  ')}
       display: flex; align-items: flex-end; gap: 12px;
     }
     .bc-corner .bc-qr { display: block; line-height: 0; flex: 0 0 auto; }
-    .bc-corner .bc-qr-img { display: block; width: 14mm; height: 14mm; }
+    /* v2.9.21：14mm → 18mm。码本体外的静区也占这 18mm，
+       实测每 module 从 0.64mm 提到 0.82mm，糊图识别率明显上升 */
+    .bc-corner .bc-qr-img { display: block; width: 18mm; height: 18mm; }
     .bc-corner .bc-cap { padding-bottom: 0.5mm; }
     .bc-corner .bc-cap .l1 { font-size: 10.5px; font-weight: 600; color: #1a3c6e; letter-spacing: 1px; }
     .bc-corner .bc-cap .l2 { font-size: 10.5px; color: #888; font-family: "SF Mono",Menlo,monospace; letter-spacing: .5px; }

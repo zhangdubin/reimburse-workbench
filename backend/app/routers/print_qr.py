@@ -65,17 +65,43 @@ def get_qr(
     return Response(content=svg_str, media_type="image/svg+xml")
 
 
+def _best_encode(raw: bytes, size: str):
+    """两种编码方案都试一遍，取 module 更少的那个。
+
+    实测：短单号 "BX20260924001" 用 Base256 会编成 22×22，用 Ascii 只有 18×18。
+    module 数越少 → 同样的打印尺寸下每个格子越大 → 手机拍照越好扫。
+    中文等场景 Base256 可能更省，所以两种都算，谁稀疏用谁。
+    """
+    best = None
+    for scheme in ("Ascii", "Base256"):
+        try:
+            enc = dmtx_encode(raw, size=size, scheme=scheme)
+        except Exception:  # noqa: BLE001 - 个别 scheme 对某些内容会拒绝，换下一个
+            continue
+        cells = (enc.width // 5) * (enc.height // 5)
+        if best is None or cells < best[0]:
+            best = (cells, enc)
+    if best is None:
+        raise HTTPException(500, "Data Matrix 编码失败：libdmtx 拒绝了这段内容")
+    return best[1]
+
+
 @router.get("/dm", response_class=Response)
 def get_dm(
     text: str = Query(..., max_length=500, description="Data Matrix 内容（UTF-8，支持中文）"),
     px: int = Query(8, ge=2, le=20, description="每模块像素"),
     shape: str = Query("square", pattern="^(square|rectangular)$", description="符号形状"),
+    border: int = Query(2, ge=0, le=8, description="静区宽度（module 数，ISO 要求 ≥1，打印取 2 更稳）"),
 ):
-    """Data Matrix（v2.7.7 起）。
+    """Data Matrix（v2.7.7 起，v2.9.21 加大可扫性）。
 
     pylibdmtx `encode()` 默认 module size = 5px，pixels 是 RGB 三字节数组，
     每 5×5 像素块对应一个 module 的颜色（黑 = (0,0,0)，白 = (255,255,255)）。
     我们按 5×5 步进读取像素，渲染成 px×px 的 <rect>。
+
+    v2.9.21 两处针对「拍照扫不出来」的改进：
+      1) 编码方案自动选更稀疏的（Ascii/Base256 谁小用谁）——格子更大
+      2) 四周加静区（quiet zone）——贴着别的图案/裁到边就扫不出来了
 
     libdmtx 不可用时返回 503（而不是让异常冒到框架层），并带上原始报错，便于运维定位。
     """
@@ -85,8 +111,7 @@ def get_dm(
             detail=f"Data Matrix 组件不可用（镜像内 libdmtx 未就绪）：{DMTX_ERROR}",
         )
     raw = text.encode("utf-8")
-    enc = dmtx_encode(raw, size="SquareAuto" if shape == "square" else "RectAuto",
-                      scheme="Base256")
+    enc = _best_encode(raw, "SquareAuto" if shape == "square" else "RectAuto")
     mod_w = enc.width // 5
     mod_h = enc.height // 5
     rects = []
@@ -96,10 +121,11 @@ def get_dm(
             off = (my * 5 * enc.width + mx * 5) * 3
             if off + 2 < len(enc.pixels) and enc.pixels[off] < 128:
                 rects.append(
-                    f'<rect x="{mx * px}" y="{my * px}" width="{px}" height="{px}"/>'
+                    f'<rect x="{(mx + border) * px}" y="{(my + border) * px}" '
+                    f'width="{px}" height="{px}"/>'
                 )
-    w = mod_w * px
-    h = mod_h * px
+    w = (mod_w + 2 * border) * px
+    h = (mod_h + 2 * border) * px
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'width="{w}" height="{h}" '

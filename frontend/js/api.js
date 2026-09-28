@@ -137,6 +137,19 @@ window.WB = window.WB || {};
       return raw('POST', `/api/invoices/${invoiceId}/attachments`, { body: fd }).then((r) => r.json());
     },
     deleteAttachment: (id) => api.del(`/api/attachments/${id}`),
+
+    /* 扫码核验 */
+    scanResolve: (code) => api.get('/api/scan/resolve', { code }),
+    /**
+     * 服务端兜底解码（v2.9.21）：前端 ZXing 解不出的糊图/歪图，
+     * 交给后端 libdmtx 用多尺度、多预处理、多角度重试一遍。
+     * 只在本地解码失败后才调用，正常情况不会走到。
+     */
+    scanDecode: (file) => {
+      const fd = new FormData();
+      fd.append('file', file, file.name || 'scan.jpg');
+      return raw('POST', '/api/scan/decode', { body: fd }).then((r) => r.json());
+    },
     /** 下载受保护的影像并转成 blob URL（图片可直接进 <img>，PDF 可新窗口打开） */
     attachmentBlobUrl: async (id) => {
       const res = await raw('GET', `/api/attachments/${id}/raw`);

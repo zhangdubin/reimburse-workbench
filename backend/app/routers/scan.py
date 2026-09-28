@@ -18,12 +18,16 @@ GET /api/scan/resolve?code=xxx
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from sqlalchemy.orm import Session
 
+from .. import dmcode
 from .. import models as m
 from .. import security as sec
 from ..database import get_db
+
+# 兜底解码的图片上限：手机原图最大也就十几 MB，超了直接拒，别让内存被顶爆
+_DECODE_MAX_BYTES = 20 * 1024 * 1024
 
 router = APIRouter(prefix="/api/scan", tags=["扫码"])
 
@@ -147,3 +151,40 @@ def resolve(
         "subtitle": "",
         "hint": "没有找到该编号对应的记录（也可能它不在你的查看范围内）",
     }
+
+
+@router.post("/decode", response_model=dict)
+async def decode_barcode(
+    file: Annotated[UploadFile, File(...)],
+    user: Annotated[m.AppUser, Depends(sec.current_user)] = None,
+):
+    """服务端兜底解码（v2.9.21）。
+
+    拍照件糊/歪/码占比小时，浏览器里的 ZXing 经常解不出 Data Matrix。
+    这里用 libdmtx 换多尺度、多预处理、多角度、多组解码参数重试一遍，
+    识别率明显高于前端单解码器。
+
+    只回文本，不落库、不碰业务数据；解不出就 found=false，前端照旧提示重拍。
+    """
+    data = await file.read()
+    if not data:
+        return {"found": False, "text": "", "hint": "图片是空的"}
+    if len(data) > _DECODE_MAX_BYTES:
+        return {"found": False, "text": "", "hint": "图片太大（超过 20MB），请靠近些重拍一张"}
+
+    if not dmcode.decode_ready():
+        # libdmtx 没装好不算错误——前端 ZXing 那条路还在，只是少了兜底
+        return {
+            "found": False,
+            "text": "",
+            "hint": "服务端解码组件不可用，请让码占满取景框后重拍",
+        }
+
+    text = dmcode.decode_dm(data)
+    if not text:
+        return {
+            "found": False,
+            "text": "",
+            "hint": "没能识别出码图，请靠近一些、让码占满取景框再试",
+        }
+    return {"found": True, "text": text, "hint": ""}
