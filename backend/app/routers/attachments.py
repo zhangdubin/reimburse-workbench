@@ -17,7 +17,7 @@ import mimetypes  # noqa: F401  （保留给未来的类型嗅探）
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -39,10 +39,14 @@ _can_write = sec.require_roles(m.ROLE_FINANCE, m.ROLE_ADMIN)
 
 
 def attachment_out(a: m.InvoiceAttachment) -> dict:
+    kind = getattr(a, "kind", None) or m.DOC_INVOICE
     return {
         "id": a.id,
         "invoice_id": a.invoice_id,
         "filename": a.filename,
+        # v2.9.22：凭证类型，前端按类型分组展示（发票影像/行程单/消费水单/其他）
+        "kind": kind,
+        "kind_label": m.DOC_KIND_LABELS.get(kind, kind),
         "size": a.size,
         "mime": a.mime,
         "uploaded_by": a.uploaded_by,
@@ -68,11 +72,64 @@ def list_attachments(
     return [attachment_out(a) for a in rows]
 
 
+def _store_one(
+    invoice: m.Invoice,
+    raw_name: str,
+    content_type: str | None,
+    data: bytes,
+    kind: str,
+    user: m.AppUser,
+) -> m.InvoiceAttachment:
+    """校验并落盘一个附件。
+
+    单文件与批量上传共用，避免两处白名单/大小限制漂移。
+    调用方负责 db.add / commit。
+    """
+    if kind not in m.DOC_KINDS:
+        raise HTTPException(400, f"凭证类型非法：{kind}")
+    raw_name = (raw_name or "").strip()
+    ext = fs.safe_ext(raw_name)
+    if ext not in ALLOWED:
+        raise HTTPException(400, f"只允许上传 {'/'.join(sorted(ALLOWED))} 格式")
+    if content_type and content_type not in ALLOWED[ext]:
+        # 部分浏览器对 jpg 会给 application/octet-stream，这里宽松放行但记下真实类型
+        if content_type not in ("application/octet-stream", ""):
+            raise HTTPException(400, f"文件类型与后缀不匹配：{content_type}")
+
+    try:
+        saved = fs.save_bytes(raw_name, data, content_type)
+    except fs.FileRejected as exc:
+        raise HTTPException(400, str(exc))
+
+    return m.InvoiceAttachment(
+        invoice_id=invoice.id,
+        filename=saved["filename"],
+        stored_name=saved["stored_name"],
+        size=saved["size"],
+        mime=saved["mime"],
+        kind=kind,
+        uploaded_by=user.name,
+    )
+
+
+def _attach_audit(db: Session, request: Request, user: m.AppUser, oid: int,
+                  invoice_no: str, detail: str) -> None:
+    db.add(
+        m.AuditLog(
+            user_id=user.id, username=user.username, role=user.role,
+            action="上传发票影像", entity="invoice", entity_id=str(oid),
+            method=request.method, path=request.url.path, status_code=201,
+            ip=sec._client_ip(request), detail=f"{detail} -> 发票 {invoice_no}",
+        )
+    )
+
+
 @router.post("/invoices/{oid}/attachments", response_model=dict, status_code=201)
 async def upload_attachment(
     oid: int,
     request: Request,
     file: UploadFile = File(...),
+    kind: str = Form(m.DOC_INVOICE),
     user: m.AppUser = Depends(_can_write),
     db: Session = Depends(get_db),
 ):
@@ -80,29 +137,8 @@ async def upload_attachment(
     if not invoice:
         raise HTTPException(404, "发票不存在")
 
-    raw_name = (file.filename or "").strip()
-    ext = fs.safe_ext(raw_name)
-    if ext not in ALLOWED:
-        raise HTTPException(400, f"只允许上传 {'/'.join(sorted(ALLOWED))} 格式")
-    if file.content_type and file.content_type not in ALLOWED[ext]:
-        # 部分浏览器对 jpg 会给 application/octet-stream，这里宽松放行但记下真实类型
-        if file.content_type not in ("application/octet-stream", ""):
-            raise HTTPException(400, f"文件类型与后缀不匹配：{file.content_type}")
-
     data = await file.read()
-    try:
-        saved = fs.save_bytes(raw_name, data, file.content_type)
-    except fs.FileRejected as exc:
-        raise HTTPException(400, str(exc))
-
-    obj = m.InvoiceAttachment(
-        invoice_id=oid,
-        filename=saved["filename"],
-        stored_name=saved["stored_name"],
-        size=saved["size"],
-        mime=saved["mime"],
-        uploaded_by=user.name,
-    )
+    obj = _store_one(invoice, file.filename, file.content_type, data, kind, user)
     db.add(obj)
     # 首次上传时把文件名回填到发票主记录，兼容旧的单附件字段
     if not invoice.file_name:
@@ -110,17 +146,72 @@ async def upload_attachment(
     db.commit()
     db.refresh(obj)
 
-    db.add(
-        m.AuditLog(
-            user_id=user.id, username=user.username, role=user.role,
-            action="上传发票影像", entity="invoice", entity_id=str(oid),
-            method=request.method, path=request.url.path, status_code=201,
-            ip=sec._client_ip(request),
-            detail=f"{obj.filename} ({saved['size']} bytes) -> 发票 {invoice.invoice_no}",
-        )
-    )
+    _attach_audit(db, request, user, oid, invoice.invoice_no,
+                  f"[{m.DOC_KIND_LABELS.get(kind, kind)}] {obj.filename} ({obj.size} bytes)")
     db.commit()
     return attachment_out(obj)
+
+
+@router.post("/invoices/{oid}/attachments/batch", response_model=dict, status_code=201)
+async def upload_attachments(
+    oid: int,
+    request: Request,
+    files: list[UploadFile] = File(...),
+    kind: str = Form(m.DOC_INVOICE),
+    user: m.AppUser = Depends(_can_write),
+    db: Session = Depends(get_db),
+):
+    """一次传多份同类凭证（v2.9.22）。
+
+    登记发票时常见「一张发票 + 一串行程单/水单」，逐个文件发请求既慢又容易漏。
+    这里按类型批量落盘，单个文件不合规只跳过它，不连坐其余文件。
+    不同批次（比如行程单与水单）由前端按类型分组各调一次。
+    """
+    invoice = db.get(m.Invoice, oid)
+    if not invoice:
+        raise HTTPException(404, "发票不存在")
+    if not files:
+        raise HTTPException(400, "没有收到文件")
+    if len(files) > 50:
+        raise HTTPException(400, "单次最多上传 50 个文件，请分批操作")
+
+    saved: list[dict] = []
+    failed: list[dict] = []
+    for f in files:
+        name = (f.filename or "").strip() or "未命名文件"
+        try:
+            data = await f.read()
+            obj = _store_one(invoice, f.filename, f.content_type, data, kind, user)
+        except HTTPException as exc:
+            failed.append({"filename": name, "reason": str(exc.detail)})
+            continue
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"filename": name, "reason": f"保存失败：{exc}"})
+            continue
+        db.add(obj)
+        saved.append(obj)
+
+    if saved and not invoice.file_name:
+        invoice.file_name = saved[0].filename
+    db.commit()
+    for obj in saved:
+        db.refresh(obj)
+
+    if saved:
+        _attach_audit(db, request, user, oid, invoice.invoice_no,
+                      f"[{m.DOC_KIND_LABELS.get(kind, kind)}] 批量上传 {len(saved)} 份："
+                      + "、".join(o.filename for o in saved))
+        db.commit()
+
+    return {
+        "ok": True,
+        "saved_count": len(saved),
+        "failed_count": len(failed),
+        "saved": [attachment_out(o) for o in saved],
+        "failed": failed,
+        "kind": kind,
+        "kind_label": m.DOC_KIND_LABELS.get(kind, kind),
+    }
 
 
 @router.get("/attachments/{aid}/raw")

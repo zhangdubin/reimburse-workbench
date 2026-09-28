@@ -698,6 +698,33 @@ th.num { text-align: right; }
 }
 .att-pick { cursor: pointer; margin: 0; }
 
+/* ---------------- 随票凭证（v2.9.22） ----------------
+   发票本体之外还要挂行程单 / 消费水单，弹窗里按类型分区展示，缺件直接标出来。 */
+.doc-note {
+  font-size: var(--fs-sm); line-height: 1.6; color: var(--text-3);
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 12px; margin-bottom: var(--sp-3);
+}
+.doc-note.warn { background: var(--warning-weak); border-color: #f8d9b0; color: #8a4d06; }
+.doc-note.ok { background: var(--success-weak); border-color: #b7e4c7; color: #0e6b34; }
+.doc-group { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: var(--sp-3); overflow: hidden; }
+.doc-group.need { border-color: #f0c99a; }
+.doc-group-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 8px 12px; background: var(--panel-2);
+  border-bottom: 1px solid var(--border); font-size: var(--fs-sm);
+}
+.doc-empty { padding: 10px 12px; font-size: var(--fs-xs); color: var(--text-3); }
+/* 登记表单里的随票凭证选择行 */
+.doc-pick { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; }
+.doc-pick > .muted { font-size: var(--fs-xs); max-width: 100%; }
+.btn.btn-warn { color: var(--warning); border-color: #f3d3ac; background: var(--warning-weak); }
+.btn.btn-warn:hover { background: #ffead6; border-color: #e8b985; }
+.btn i.dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--warning); margin-left: 5px; vertical-align: middle;
+}
+
 /* ---------------- 系统参数（v2.9.8 视觉重做） ---------------- */
 .set-card { max-width: 1080px; }
 

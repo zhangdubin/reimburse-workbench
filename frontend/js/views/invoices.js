@@ -9,15 +9,48 @@ WB.views = WB.views || {};
 
   const state = {
     tab: 'ledger',
-    q: '', check_status: '', invoice_type: '', unlinked: false,
+    q: '', check_status: '', invoice_type: '', unlinked: false, doc_status: '',
     date_from: '', date_to: '', amount_min: '', amount_max: '',
     sort: 'id_desc', page: 1, page_size: 20,
   };
 
+  /* ---------------- 随票凭证（v2.9.22） ----------------
+   * 发票本体之外还要能挂行程单（滴滴等市内交通）与消费水单（酒店账单）。
+   * 凭证类型与后端 models.DOC_* 一一对应，值是接口契约，不要随手改。
+   */
+  const DOC_KINDS = [
+    { id: 'invoice', name: '发票影像' },
+    { id: 'itinerary', name: '行程单' },
+    { id: 'folio', name: '消费水单' },
+    { id: 'other', name: '其他材料' },
+  ];
+  const docLabel = (k) => (DOC_KINDS.find((x) => x.id === k) || { name: k || '凭证' }).name;
+
+  /** 按文件名猜凭证类型：财务拿到的行程单/水单文件名通常就写着用途 */
+  function guessKind(name) {
+    const s = String(name || '').toLowerCase();
+    if (/行程|itinerary|trip|嘀嘀|滴滴|出行|打车/.test(s)) return 'itinerary';
+    if (/水单|folio|账单|消费明细|酒店/.test(s)) return 'folio';
+    return '';
+  }
+
+  /** 台账「凭证」列的渲染：有要求但没附就点出来，别让缺件藏在弹窗里 */
+  function docCell(v) {
+    const n = v.attachment_count || 0;
+    if (v.doc_status === 'missing') {
+      return `<span class="badge b-orange" title="该费用类型要求附${U.esc(v.required_doc_label || '凭证')}">缺${U.esc(v.required_doc_label || '凭证')}</span>`;
+    }
+    if (v.doc_status === 'ok') {
+      return `<span class="badge b-green">已附${U.esc(v.required_doc_label || '凭证')}</span>`;
+    }
+    return n ? `<span class="badge b-blue">${n} 份</span>` : '<span class="muted">—</span>';
+  }
+
   function params(withPage = true) {
     const p = {
       q: state.q, check_status: state.check_status, invoice_type: state.invoice_type,
-      unlinked: state.unlinked || '', date_from: state.date_from, date_to: state.date_to,
+      unlinked: state.unlinked || '', doc_status: state.doc_status,
+      date_from: state.date_from, date_to: state.date_to,
       amount_min: state.amount_min, amount_max: state.amount_max, sort: state.sort,
     };
     if (withPage) {
@@ -111,6 +144,18 @@ WB.views = WB.views || {};
           <div class="form-item"><label>购买方税号</label><input id="v-buytax" value="${U.esc(d.buyer_tax_no || '')}"></div>
           <div class="form-item full"><label>备注</label><input id="v-remark" value="${U.esc(d.remark || '')}"></div>
         </div>
+        <div class="form-section" style="margin-top:14px">随票凭证（可选）</div>
+        <div class="doc-pick">
+          <select id="v-dockind">${U.options(
+            DOC_KINDS.filter((k) => k.id !== 'invoice'),
+            { selected: 'itinerary' }
+          )}</select>
+          <label class="btn btn-sm" style="cursor:pointer">+ 选择文件（可多选）
+            <input type="file" id="v-docfile" multiple hidden accept=".pdf,.ofd,.xml,.xlsx,.jpg,.jpeg,.png,.webp">
+          </label>
+          ${U.cameraBtn('#v-docfile', '拍照')}
+          <span class="muted" id="v-dochint">行程单 / 消费水单等材料，保存后自动归到本张发票名下</span>
+        </div>
         <p class="muted" style="font-size:11.5px;margin:12px 0 0">提示：保存时系统会自动检测发票号码是否重复，重复的发票会被标记为「异常」。</p>`,
       footer: `<button class="btn" data-close>取消</button><button class="btn btn-primary" data-save>保存</button>`,
       onMount(m) {
@@ -118,6 +163,37 @@ WB.views = WB.views || {};
         // 识别时选过的文件要留到保存后传成影像：用户已经把发票拍/传上来了，
         // 不能让它识别完就丢掉、还得去「影像」里再传一遍。
         let pickedFile = null;
+        // 随票凭证：登记时就把行程单/水单一起交上来，省得保存后再去凭证弹窗里补
+        const docQueue = [];
+        const docFileEl = g('#v-docfile');
+        const docHintEl = g('#v-dochint');
+        const drawDocQueue = () => {
+          if (!docHintEl) return;
+          if (!docQueue.length) {
+            docHintEl.textContent = '行程单 / 消费水单等材料，保存后自动归到本张发票名下';
+            return;
+          }
+          const byKind = {};
+          docQueue.forEach((d) => (byKind[d.kind] = (byKind[d.kind] || 0) + 1));
+          const names = docQueue.map((d) => d.file.name).join('、');
+          docHintEl.innerHTML =
+            Object.entries(byKind).map(([k, n]) => `<b>${n} 份${docLabel(k)}</b>`).join('、') +
+            ` <span title="${U.esc(names)}">（${U.esc(names.slice(0, 22))}${names.length > 22 ? '…' : ''}）</span>`;
+        };
+        if (docFileEl) {
+          docFileEl.onchange = () => {
+            const kind = g('#v-dockind').value;
+            Array.from(docFileEl.files || []).forEach((f) => {
+              if (f.size > 10 * 1024 * 1024) {
+                U.toast(`${f.name} 超过 10MB，已跳过`, 'warn', 4200);
+                return;
+              }
+              docQueue.push({ file: f, kind });
+            });
+            docFileEl.value = '';
+            drawDocQueue();
+          };
+        }
         // 上传发票 -> 服务端识别 -> 自动填表。财务手工登记发票时不用再逐个字段手敲，
         // 识别不准的地方仍然可以改（这是「手工录入信息不全」的正解：先把能识别的填上）。
         const fileEl = g('#v-file');
@@ -180,22 +256,34 @@ WB.views = WB.views || {};
           if (!payload.invoice_no) return U.toast('请填写发票号码', 'warn');
           if (!payload.amount) return U.toast('请填写价税合计金额', 'warn');
           try {
-            if (isNew) {
-              const inv = await api.createInvoice(payload);
-              if (pickedFile && inv && inv.id) {
-                try {
-                  await api.uploadAttachment(inv.id, pickedFile);
-                  U.toast('已保存，识别用的文件已保留为发票影像', 'success');
-                } catch (e2) {
-                  U.toast('发票已保存，但影像上传失败，请在「影像」里补传', 'warn', 5000);
-                }
-              } else {
-                U.toast('已保存', 'success');
+            const saved = isNew
+              ? await api.createInvoice(payload)
+              : await api.updateInvoice(d.id, payload);
+            const targetId = saved && saved.id ? saved.id : d.id;
+            const notes = [];
+            // 识别时选过的文件直接留成发票影像
+            if (pickedFile && targetId) {
+              try {
+                await api.uploadAttachment(targetId, pickedFile, 'invoice');
+                notes.push('识别用的文件已保留为发票影像');
+              } catch (e2) {
+                notes.push('影像上传失败，请在「凭证」里补传');
               }
-            } else {
-              await api.updateInvoice(d.id, payload);
-              U.toast('已保存', 'success');
             }
+            // 随票凭证按类型分组上传（行程单一批、水单一批）
+            if (docQueue.length && targetId) {
+              const byKind = {};
+              docQueue.forEach((x) => (byKind[x.kind] = byKind[x.kind] || []).push(x.file));
+              let okN = 0;
+              for (const [k, files] of Object.entries(byKind)) {
+                try {
+                  const rr = await api.uploadAttachments(targetId, files, k);
+                  okN += (rr && rr.saved_count) || 0;
+                } catch (_) {}
+              }
+              notes.push(okN ? `随票凭证已归档 ${okN} 份` : '随票凭证上传失败，请在「凭证」里补传');
+            }
+            U.toast(notes.length ? `已保存；${notes.join('；')}` : '已保存', 'success', notes.length ? 4600 : 2600);
             m.close();
             onDone();
           } catch (e) {}
@@ -255,10 +343,13 @@ WB.views = WB.views || {};
     });
   }
 
-  /* ---------------- 发票影像 ---------------- */
+  /* ---------------- 随票凭证（发票影像 / 行程单 / 消费水单 / 其他） ----------------
+   * 之前只叫「影像」，只能传发票本身。实际入账要的是「一张发票 + 成套材料」：
+   * 市内交通配行程单、住宿配消费水单。这里按类型分区管理，缺件直接标红提示。
+   */
   const IMG_EXT = /\.(png|jpe?g|webp)$/i;
 
-  function openAttachments(inv, onChanged) {
+  function openDocs(inv, onChanged) {
     const canWrite = WB.can('invoice.write');
     let blobs = [];
     const notify = () => {
@@ -266,54 +357,85 @@ WB.views = WB.views || {};
     };
 
     const m = U.modal({
-      title: `发票影像 · ${inv.invoice_no}`,
-      width: 760,
+      title: `随票凭证 · ${inv.invoice_no}`,
+      width: 860,
       body: `
-        <div class="att-toolbar">
-          ${canWrite
-            ? `<label class="btn btn-sm btn-primary att-pick">+ 上传影像
-                 <input type="file" id="att-file" accept=".pdf,.jpg,.jpeg,.png,.webp" hidden>
-               </label>
-               ${U.cameraBtn('#att-file', '拍照')}`
-            : ''}
-          <span class="muted" style="font-size:12px">支持 PDF / JPG / PNG / WEBP，单文件不超过 10MB</span>
-        </div>
-        <div id="att-list"><div class="empty"><span class="spin"></span>加载中…</div></div>`,
+        ${canWrite ? `<div class="att-toolbar">
+          <div class="field"><label>凭证类型</label>
+            <select id="doc-kind">${U.options(DOC_KINDS, { selected: inv.required_doc || 'invoice' })}</select></div>
+          <label class="btn btn-sm btn-primary att-pick">+ 选择文件（可多选）
+            <input type="file" id="doc-file" accept=".pdf,.ofd,.xml,.xlsx,.jpg,.jpeg,.png,.webp" multiple hidden>
+          </label>
+          ${U.cameraBtn('#doc-file', '拍照')}
+          <span class="muted" style="font-size:12px">支持 PDF / OFD / XML / XLSX / 图片，单文件不超过 10MB</span>
+        </div>` : ''}
+        <div id="doc-hint"></div>
+        <div id="doc-list"><div class="empty"><span class="spin"></span>加载中…</div></div>`,
       footer: `<button class="btn" data-close>关闭</button>`,
       onMount(apiMod) {
-        const listEl = U.qs('#att-list', apiMod.el);
+        const listEl = U.qs('#doc-list', apiMod.el);
+        const hintEl = U.qs('#doc-hint', apiMod.el);
+        let list = [];
+
+        /** 齐备提示：费用类型要求的那类凭证有没有附上，一眼可见 */
+        function hint() {
+          if (!hintEl) return;
+          if (!inv.required_doc) {
+            hintEl.innerHTML = '<div class="doc-note">该发票的费用类型未要求补充单据；行程单 / 消费水单可按需上传备查。</div>';
+            return;
+          }
+          const label = docLabel(inv.required_doc);
+          const has = list.some((a) => (a.kind || 'invoice') === inv.required_doc);
+          hintEl.innerHTML = has
+            ? `<div class="doc-note ok">已附<b>${U.esc(label)}</b>，该发票凭证齐备。</div>`
+            : `<div class="doc-note warn">该发票应附<b>${U.esc(label)}</b>，目前尚未上传，请补传后再关联报销。</div>`;
+        }
 
         async function draw() {
           // 每次重绘都释放上一轮的 blob URL，避免内存泄漏
           blobs.forEach((u) => URL.revokeObjectURL(u));
           blobs = [];
-          const list = await api.attachments(inv.id);
+          list = await api.attachments(inv.id);
+          hint();
           if (!list.length) {
-            listEl.innerHTML = '<div class="empty">还没有上传影像</div>';
+            listEl.innerHTML = '<div class="empty">还没有上传任何凭证</div>';
             return;
           }
-          listEl.innerHTML = `
-            <table class="tbl">
-              <thead><tr><th>文件名</th><th>类型</th><th class="num">大小</th><th>上传人</th><th>时间</th><th style="width:1%">操作</th></tr></thead>
-              <tbody>
-                ${list
-                  .map(
-                    (a) => `<tr>
-                  <td class="ellipsis" title="${U.esc(a.filename)}">${U.esc(a.filename)}</td>
-                  <td class="muted">${U.esc(a.mime || '—')}</td>
-                  <td class="num">${(a.size / 1024).toFixed(1)} KB</td>
-                  <td class="muted">${U.esc(a.uploaded_by || '—')}</td>
-                  <td class="sub-line nowrap">${U.datetime(a.created_at)}</td>
-                  <td><div class="row-actions">
-                    <button class="btn btn-xs" data-view="${a.id}">预览</button>
-                    <button class="btn btn-xs" data-dl="${a.id}">下载</button>
-                    ${canWrite ? `<button class="btn btn-xs btn-danger" data-del="${a.id}">删除</button>` : ''}
-                  </div></td>
-                </tr>`
-                  )
-                  .join('')}
-              </tbody>
-            </table>`;
+          // 按类型分组：发票本体与佐证材料分开看，缺哪一类一目了然
+          listEl.innerHTML = DOC_KINDS.map((g) => {
+            const rows = list.filter((a) => (a.kind || 'invoice') === g.id);
+            const need = inv.required_doc === g.id;
+            const mark = !need
+              ? ''
+              : rows.length
+                ? '<span class="badge b-green">已附</span>'
+                : '<span class="badge b-orange">应附 · 缺</span>';
+            return `<div class="doc-group${need ? ' need' : ''}">
+              <div class="doc-group-head"><b>${U.esc(g.name)}</b><span class="chip">${rows.length}</span>${mark}</div>
+              ${
+                rows.length
+                  ? `<table class="tbl">
+                    <thead><tr><th>文件名</th><th class="num">大小</th><th>上传人</th><th>时间</th><th style="width:1%">操作</th></tr></thead>
+                    <tbody>${rows
+                      .map(
+                        (a) => `<tr>
+                      <td class="ellipsis" title="${U.esc(a.filename)}">${U.esc(a.filename)}</td>
+                      <td class="num">${(a.size / 1024).toFixed(1)} KB</td>
+                      <td class="muted">${U.esc(a.uploaded_by || '—')}</td>
+                      <td class="sub-line nowrap">${U.datetime(a.created_at)}</td>
+                      <td><div class="row-actions">
+                        <button class="btn btn-xs" data-view="${a.id}">预览</button>
+                        <button class="btn btn-xs" data-dl="${a.id}">下载</button>
+                        ${canWrite ? `<button class="btn btn-xs btn-danger" data-del="${a.id}">删除</button>` : ''}
+                      </div></td>
+                    </tr>`
+                      )
+                      .join('')}</tbody>
+                  </table>`
+                  : '<div class="doc-empty">暂无</div>'
+              }
+            </div>`;
+          }).join('');
 
           // 影像接口需要鉴权，所以不能直接把 /raw 塞进 src，必须先取回 blob
           for (const a of list) {
@@ -365,21 +487,36 @@ WB.views = WB.views || {};
           }
         });
 
-        const fileInput = U.qs('#att-file', apiMod.el);
+        const fileInput = U.qs('#doc-file', apiMod.el);
         if (fileInput) {
           fileInput.onchange = async () => {
-            const f = fileInput.files && fileInput.files[0];
-            if (!f) return;
-            if (f.size > 10 * 1024 * 1024) {
-              return U.toast('文件超过 10MB 限制', 'warn');
-            }
+            // 一次可选多个文件：一张发票常配一串行程单/水单，逐个传太费事
+            const files = Array.from(fileInput.files || []);
+            fileInput.value = ''; // 先清空，同一个文件再选一次也能触发
+            if (!files.length) return;
+            const kindEl = U.qs('#doc-kind', apiMod.el);
+            const kind = (kindEl && kindEl.value) || 'invoice';
+            const tooBig = files.filter((f) => f.size > 10 * 1024 * 1024);
+            const usable = files.filter((f) => f.size <= 10 * 1024 * 1024);
+            if (tooBig.length) U.toast(`${tooBig.length} 个文件超过 10MB，已跳过`, 'warn', 4200);
+            if (!usable.length) return;
             try {
-              await api.uploadAttachment(inv.id, f);
-              U.toast('上传成功', 'success');
+              const r =
+                usable.length === 1
+                  ? await api.uploadAttachment(inv.id, usable[0], kind)
+                  : await api.uploadAttachments(inv.id, usable, kind);
+              const failed = (r && r.failed) || [];
+              const saved = r && r.saved_count != null ? r.saved_count : 1;
+              U.toast(
+                failed.length
+                  ? `已上传 ${saved} 份${docLabel(kind)}，${failed.length} 份被跳过：${failed[0].reason}`
+                  : `已上传 ${saved} 份${docLabel(kind)}`,
+                failed.length ? 'warn' : 'success',
+                failed.length ? 5200 : 2600
+              );
               notify();
               draw();
             } catch (_) {}
-            fileInput.value = '';
           };
         }
 
@@ -394,6 +531,362 @@ WB.views = WB.views || {};
           blobs = [];
           origClose.call(apiMod);
         };
+      },
+    });
+    return m;
+  }
+
+  /* ---------------- 批量登记发票 ----------------
+   * 财务往往一次拿到一叠票（或一串平台行程单），原来只能一张张录。
+   * 这里一次选多个文件：逐个识别 -> 每行可核对修改 -> 非发票文件指定用途与归属
+   * -> 一次保存（先建发票拿 id，再把凭证按类型挂到对应发票上）。
+   */
+  function openBatchForm(meta, onDone) {
+    const CONC = 3; // 识别并发：本地解析 + OCR 是 CPU 活，并发太高反而更慢
+    const rows = []; // {file, kind, target, st, r, no, date, amount, seller, cat}
+    let saving = false;
+    const TYPE_DEFAULT = '增值税电子普通发票';
+    const aiReady = !!(WB.ai && WB.ai.state && WB.ai.state.status && WB.ai.state.status.configured);
+
+    const m = U.modal({
+      title: '批量登记发票',
+      width: 1120,
+      body: `
+        <div class="form-section">① 选择文件</div>
+        <div class="recog-drop">
+          <label class="btn btn-sm btn-primary" style="cursor:pointer">选择文件（可多选）
+            <input type="file" id="bd-file" multiple hidden
+                   accept=".pdf,.ofd,.xml,.xlsx,.jpg,.jpeg,.png,.webp">
+          </label>
+          ${U.cameraBtn('#bd-file', '拍照')}
+          <label class="switch-row" title="本地解析与 OCR 都没覆盖到的关键字段，交给大模型再读一遍">
+            <input type="checkbox" id="bd-use-ai" ${aiReady ? 'checked' : 'disabled'}>
+            <span>AI 兜底识别</span>
+          </label>
+          <span class="muted" id="bd-hint">发票可多选；行程单 / 消费水单也可以一起选进来，识别后指定挂到哪张发票</span>
+        </div>
+        <div class="form-section" style="margin-top:14px">② 核对与分类</div>
+        <div id="bd-list"><div class="empty" style="padding:20px">还没有选择文件</div></div>`,
+      footer: `<span class="muted" id="bd-count" style="font-size:12px"></span>
+               <div class="spacer"></div>
+               <button class="btn" data-close>取消</button>
+               <button class="btn btn-primary" data-save disabled>全部保存</button>`,
+      onMount(mod) {
+        const listEl = U.qs('#bd-list', mod.el);
+        const countEl = U.qs('#bd-count', mod.el);
+        const fileEl = U.qs('#bd-file', mod.el);
+        const saveBtn = U.qs('[data-save]', mod.el);
+        const hintEl = U.qs('#bd-hint', mod.el);
+
+        const invRows = () => rows.filter((r) => r.kind === 'invoice');
+
+        function stHTML(r) {
+          if (r.st === 'pending') return '<span class="muted">待识别</span>';
+          if (r.st === 'recognizing') return '<span class="spin"></span><span class="muted"> 识别中</span>';
+          if (r.st === 'error') {
+            return `<span class="badge b-red">识别失败</span><div class="sub-line ellipsis" title="${U.esc(r.err || '')}">${U.esc(r.err || '')}</div>`;
+          }
+          const conf = Math.round(((r.r && r.r.confidence) || 0) * 100);
+          if (r.kind === 'invoice') {
+            return `<span class="badge b-green">已识别</span><div class="sub-line">置信度 ${conf}%</div>`;
+          }
+          return `<span class="badge b-orange">非发票要素</span><div class="sub-line">请确认用途</div>`;
+        }
+
+        function refreshCount() {
+          const inv = invRows().length;
+          const docs = rows.filter((r) => r.kind !== 'invoice' && r.target > -1).length;
+          countEl.textContent = `已选 ${rows.length} 个文件 · 发票 ${inv} 张 · 随票凭证 ${docs} 份`;
+          saveBtn.disabled = saving || !inv;
+        }
+
+        /** 归属下拉：把非发票文件挂到某一张待登记发票上 */
+        function refreshTargets() {
+          const invs = invRows();
+          U.qsa('tr[data-i]', listEl).forEach((tr) => {
+            const i = Number(tr.dataset.i);
+            const r = rows[i];
+            const sel = tr.querySelector('[data-f="target"]');
+            if (!sel) return;
+            if (r.kind === 'invoice') {
+              sel.innerHTML = '<option value="-1">—（本行登记为发票）</option>';
+              sel.disabled = true;
+              r.target = -1;
+              return;
+            }
+            if (!invs.length) {
+              sel.innerHTML = '<option value="-1">请先指定一张发票</option>';
+              sel.disabled = true;
+              r.target = -1;
+              return;
+            }
+            sel.disabled = false;
+            sel.innerHTML =
+              invs
+                .map(
+                  (x, k) =>
+                    `<option value="${rows.indexOf(x)}">第 ${k + 1} 张 · ${U.esc(
+                      x.no || x.file.name.slice(0, 14)
+                    )}</option>`
+                )
+                .join('') + '<option value="-1">不挂（保存后到凭证里补）</option>';
+            if (!invs.some((x) => rows.indexOf(x) === r.target)) {
+              r.target = rows.indexOf(invs[0]); // 默认挂到第一张：一趟差旅通常就一张票配一份材料
+            }
+            sel.value = String(r.target);
+          });
+          refreshCount();
+        }
+
+        function rowHTML(r, i) {
+          return `<tr data-i="${i}">
+            <td class="nowrap">${i + 1}</td>
+            <td><div class="ellipsis" style="max-width:170px" title="${U.esc(r.file.name)}">${U.esc(r.file.name)}</div>
+              <div class="sub-line">${(r.file.size / 1024).toFixed(0)} KB</div></td>
+            <td><select data-f="kind">${U.options(DOC_KINDS, { selected: r.kind || 'other' })}</select></td>
+            <td><select data-f="target"></select></td>
+            <td><input data-f="no" class="mono" style="width:140px" value="${U.esc(r.no || '')}"></td>
+            <td><input type="date" data-f="date" value="${U.esc(r.date || '')}"></td>
+            <td><input type="number" step="0.01" data-f="amount" style="width:92px" value="${r.amount == null ? '' : r.amount}"></td>
+            <td><input data-f="seller" style="width:150px" value="${U.esc(r.seller || '')}"></td>
+            <td><select data-f="cat">${U.options(meta.categories, { selected: r.cat, placeholder: '不指定' })}</select></td>
+            <td data-cell="st">${stHTML(r)}</td>
+            <td><button class="btn btn-xs" data-del-row="${i}">移除</button></td>
+          </tr>`;
+        }
+
+        function draw() {
+          if (!rows.length) {
+            listEl.innerHTML = '<div class="empty" style="padding:20px">还没有选择文件</div>';
+            refreshCount();
+            return;
+          }
+          listEl.innerHTML = `<div class="table-wrap"><table class="tbl">
+            <thead><tr>
+              <th style="width:28px">#</th><th>文件</th><th style="width:104px">用途</th>
+              <th style="width:170px">归属发票</th><th>发票号码</th><th>开票日期</th>
+              <th class="num">价税合计</th><th>销售方</th><th style="width:130px">费用类型</th>
+              <th style="width:120px">识别</th><th style="width:1%">操作</th>
+            </tr></thead>
+            <tbody>${rows.map((r, i) => rowHTML(r, i)).join('')}</tbody>
+          </table></div>`;
+          refreshTargets();
+        }
+
+        /** 识别完成后只回填这一行，不整表重绘，免得打断正在手敲的用户 */
+        function fillRow(i) {
+          const r = rows[i];
+          const tr = U.qs(`tr[data-i="${i}"]`, listEl);
+          if (!tr) return;
+          const set = (f, v) => {
+            const el = tr.querySelector(`[data-f="${f}"]`);
+            if (el && document.activeElement !== el) el.value = v == null ? '' : String(v);
+          };
+          set('no', r.no);
+          set('date', r.date);
+          set('amount', r.amount);
+          set('seller', r.seller);
+          const st = tr.querySelector('[data-cell="st"]');
+          if (st) st.innerHTML = stHTML(r);
+          const kindEl = tr.querySelector('[data-f="kind"]');
+          if (kindEl) kindEl.value = r.kind || 'other';
+          refreshTargets();
+        }
+
+        /** 单个文件识别：结果填进 model，识别不出要素的按文件名猜用途 */
+        async function recognizeOne(r, i) {
+          r.st = 'recognizing';
+          fillRow(i);
+          try {
+            const useAi = !!(U.qs('#bd-use-ai', mod.el) || {}).checked;
+            const res = await api.recognizeFile(r.file, null, null, { useAi });
+            r.r = res || {};
+            r.no = String(r.r.invoice_no || '').trim();
+            r.date = r.r.invoice_date || '';
+            r.amount = r.r.amount == null || r.r.amount === '' ? '' : r.r.amount;
+            r.seller = r.r.seller_name || '';
+            const looksInvoice = !!r.no || Number(r.amount) > 0;
+            r.kind = looksInvoice ? 'invoice' : guessKind(r.file.name) || 'other';
+            r.st = 'done';
+          } catch (e) {
+            r.st = 'error';
+            r.err = e.message || String(e);
+          }
+          fillRow(i);
+          refreshCount();
+        }
+
+        // 文件入队：识别并发跑，避免十几张票串行等到天荒地老
+        async function recognizeAll(queue) {
+          let idx = 0;
+          const worker = async () => {
+            while (idx < queue.length) {
+              const k = idx++;
+              await recognizeOne(rows[queue[k]], queue[k]);
+            }
+          };
+          await Promise.all(Array.from({ length: Math.min(CONC, queue.length) }, worker));
+        }
+
+        if (fileEl) {
+          fileEl.onchange = async () => {
+            const files = Array.from(fileEl.files || []);
+            fileEl.value = '';
+            if (!files.length) return;
+            const queue = [];
+            files.forEach((f) => {
+              if (f.size > 10 * 1024 * 1024) {
+                U.toast(`${f.name} 超过 10MB，已跳过`, 'warn', 4200);
+                return;
+              }
+              rows.push({ file: f, kind: '', target: -1, st: 'pending', r: null,
+                          no: '', date: '', amount: '', seller: '', cat: null });
+              queue.push(rows.length - 1);
+            });
+            if (!queue.length) return;
+            hintEl.textContent = `正在识别 ${queue.length} 个文件…`;
+            draw();
+            await recognizeAll(queue);
+            const invN = invRows().length;
+            const docsN = rows.length - invN;
+            hintEl.innerHTML = `识别完成：发票 <b>${invN}</b> 张、其他材料 <b>${docsN}</b> 份。
+              <span class="muted">标「非发票要素」的请确认用途，并选择挂到哪张发票</span>`;
+          };
+        }
+
+        listEl.addEventListener('change', (e) => {
+          const tr = e.target.closest('tr[data-i]');
+          if (!tr) return;
+          const i = Number(tr.dataset.i);
+          const r = rows[i];
+          const f = e.target.dataset.f;
+          if (!f) return;
+          if (f === 'kind') {
+            r.kind = e.target.value;
+            fillRow(i);
+            if (r.kind === 'invoice' && !r.no && !Number(r.amount)) {
+              U.toast('这一行按发票登记，请补全发票号码与金额', 'warn');
+            }
+          } else if (f === 'target') {
+            r.target = Number(e.target.value);
+            refreshCount();
+          } else if (f === 'cat') {
+            r.cat = e.target.value ? Number(e.target.value) : null;
+          } else {
+            r[f] = e.target.value;
+            if (f === 'amount') refreshCount();
+          }
+        });
+
+        listEl.addEventListener('input', (e) => {
+          const tr = e.target.closest('tr[data-i]');
+          if (!tr) return;
+          const r = rows[Number(tr.dataset.i)];
+          const f = e.target.dataset.f;
+          if (f && f !== 'kind' && f !== 'target' && f !== 'cat') r[f] = e.target.value;
+        });
+
+        listEl.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-del-row]');
+          if (!b) return;
+          rows.splice(Number(b.dataset.delRow), 1); // 下标会整体前移，必须整表重绘
+          draw();
+        });
+
+        saveBtn.onclick = async () => {
+          if (saving) return;
+          const invs = invRows();
+          if (!invs.length) return U.toast('至少要有一行按「发票影像」登记', 'warn');
+          for (const r of invs) {
+            if (!String(r.no || '').trim()) {
+              return U.toast(`文件「${r.file.name}」缺少发票号码，请补全或改用途`, 'warn', 4500);
+            }
+            if (!(Number(r.amount) > 0)) {
+              return U.toast(`文件「${r.file.name}」缺少价税合计金额`, 'warn', 4500);
+            }
+          }
+          saving = true;
+          saveBtn.textContent = '保存中…';
+          saveBtn.disabled = true;
+
+          const payloads = invs.map((r) => ({
+            invoice_no: String(r.no).trim(),
+            invoice_code: null,
+            invoice_type: TYPE_DEFAULT,
+            amount: Number(r.amount) || 0,
+            tax_rate: 0,
+            tax_amount: 0,
+            invoice_date: r.date || null,
+            seller_name: r.seller || null,
+            buyer_name: null,
+            category_id: r.cat || null,
+            remark: '批量登记',
+          }));
+
+          let res;
+          try {
+            res = await api.createInvoicesBatch(payloads);
+          } catch (e) {
+            saving = false;
+            saveBtn.textContent = '全部保存';
+            refreshCount();
+            return;
+          }
+          const idByIndex = {};
+          (res.created || []).forEach((c) => (idByIndex[c.index] = c.id));
+
+          // 发票本体：识别用的原文件直接留成影像，不用再去「凭证」里补传
+          let docOk = 0;
+          const failedUploads = [];
+          for (let k = 0; k < invs.length; k += 1) {
+            const id = idByIndex[k];
+            if (!id) continue;
+            try {
+              await api.uploadAttachment(id, invs[k].file, 'invoice');
+              docOk += 1;
+            } catch (_) {
+              failedUploads.push(invs[k].file.name);
+            }
+          }
+          // 行程单 / 水单：按归属发票分组，同类型合并成一次批量上传
+          const grouped = {};
+          const invIndexMap = {}; // rows 下标 -> 发票序号
+          invs.forEach((x, k) => (invIndexMap[rows.indexOf(x)] = k));
+          rows
+            .filter((r) => r.kind !== 'invoice' && r.target > -1)
+            .forEach((r) => {
+              const k = invIndexMap[r.target];
+              const id = idByIndex[k];
+              if (!id) return;
+              grouped[id] = grouped[id] || {};
+              (grouped[id][r.kind] = grouped[id][r.kind] || []).push(r.file);
+            });
+          for (const [id, byKind] of Object.entries(grouped)) {
+            for (const [kind, files] of Object.entries(byKind)) {
+              try {
+                const rr = await api.uploadAttachments(Number(id), files, kind);
+                docOk += (rr && rr.saved_count) || 0;
+                (rr && rr.failed ? rr.failed : []).forEach((x) => failedUploads.push(x.filename));
+              } catch (_) {
+                files.forEach((f) => failedUploads.push(f.name));
+              }
+            }
+          }
+
+          const skipped = rows.filter((r) => r.kind !== 'invoice' && r.target <= -1).length;
+          const parts = [`已登记 ${res.created_count} 张发票，附件归档 ${docOk} 份`];
+          if (res.failed_count) {
+            parts.push(`${res.failed_count} 张未登记（${res.failed.map((x) => x.invoice_no || '缺号码').join('、')}）`);
+          }
+          if (res.duplicate_count) parts.push(`${res.duplicate_count} 张与已有发票重号，已标为异常`);
+          if (failedUploads.length) parts.push(`${failedUploads.length} 份文件上传失败`);
+          if (skipped) parts.push(`${skipped} 份材料未指定发票，可在发票「凭证」里补传`);
+          U.toast(parts.join('；'), res.failed_count || failedUploads.length ? 'warn' : 'success', 6000);
+          mod.close();
+          onDone();
+        };
+
+        draw();
       },
     });
     return m;
@@ -435,6 +928,7 @@ WB.views = WB.views || {};
       U.qs('#iv-kpi', root).innerHTML = `
         <div class="kpi"><div class="kpi-label">发票总金额</div><div class="kpi-value">${U.moneyShort(s.total_amount)}</div><div class="kpi-sub">共 ${U.num(s.total_count)} 张 · 税额 ${U.moneyShort(s.total_tax)}</div></div>
         <div class="kpi k-orange"><div class="kpi-label">待关联报销单</div><div class="kpi-value">${U.num(s.unlinked_count)}</div><div class="kpi-sub">尚未挂到任何报销单</div></div>
+        <div class="kpi k-purple"><div class="kpi-label">缺随票凭证</div><div class="kpi-value">${U.num(s.missing_doc_count || 0)}</div><div class="kpi-sub">应附行程单 / 消费水单但未上传</div></div>
         <div class="kpi k-red"><div class="kpi-label">问题发票</div><div class="kpi-value">${U.num(s.duplicate_count)}</div><div class="kpi-sub">重复号码组，存在重复报销风险</div></div>
         <div class="kpi k-green"><div class="kpi-label">已查验</div><div class="kpi-value">${U.num((s.by_status.find((x) => x.name === '已查验') || {}).count || 0)}</div><div class="kpi-sub">基础校验通过</div></div>`;
       U.qs('#tab-cnt', root).textContent = s.total_count;
@@ -685,7 +1179,7 @@ WB.views = WB.views || {};
             <thead><tr>
               <th style="width:34px">${WB.can('invoice.write') ? '<input type="checkbox" id="ck-all">' : ''}</th>
               <th>发票号码 / 代码</th><th>类型</th><th>开票日期</th><th>销售方</th>
-              <th class="num">价税合计</th><th class="num">税额</th><th>查验状态</th><th>关联单号</th><th style="width:1%">操作</th>
+              <th class="num">价税合计</th><th class="num">税额</th><th>查验状态</th><th>随票凭证</th><th>关联单号</th><th style="width:1%">操作</th>
             </tr></thead>
             <tbody>
               ${rows
@@ -699,10 +1193,11 @@ WB.views = WB.views || {};
                 <td class="num amount">${U.money(v.amount)}</td>
                 <td class="num muted">${U.money(v.tax_amount)}</td>
                 <td>${U.badge(v.check_status)}${v.check_result ? `<div class="sub-line ellipsis" title="${U.esc(v.check_result)}">${U.esc(v.check_result)}</div>` : ''}</td>
+                <td>${docCell(v)}</td>
                 <td>${v.reimbursement_code ? `<span class="chip">${U.esc(v.reimbursement_code)}</span>` : '<span class="badge b-orange">待关联</span>'}</td>
                 <td>${WB.can('invoice.write')
                   ? `<div class="row-actions">
-                  <button class="btn btn-xs" data-act="att">影像</button>
+                  <button class="btn btn-xs ${v.doc_status === 'missing' ? 'btn-warn' : ''}" data-act="att">凭证${v.doc_status === 'missing' ? '<i class="dot"></i>' : ''}</button>
                   <button class="btn btn-xs" data-act="check">查验</button>
                   <button class="btn btn-xs" data-act="link">${v.reimbursement_code ? '改关联' : '关联'}</button>
                   <button class="btn btn-xs" data-act="edit">编辑</button>
@@ -710,7 +1205,7 @@ WB.views = WB.views || {};
                   <button class="btn btn-xs btn-danger" data-act="del">删除</button>
                 </div>`
                   : `<div class="row-actions">
-                  <button class="btn btn-xs" data-act="att">影像</button>
+                  <button class="btn btn-xs" data-act="att">凭证</button>
                   <button class="btn btn-xs" data-act="print">打印</button>
                 </div>`}</td>
               </tr>`
@@ -718,7 +1213,7 @@ WB.views = WB.views || {};
                 .join('')}
             </tbody>
           </table>`
-              : U.emptyRow(10, '没有符合条件的发票')
+              : U.emptyRow(11, '没有符合条件的发票')
           }
         </div>
         ${U.pager(data.total, data.page, data.page_size)}`;
@@ -817,7 +1312,7 @@ WB.views = WB.views || {};
       }
       const row = (await api.invoice(id));
       if (act === 'att') {
-        return openAttachments(row, () => {
+        return openDocs(row, () => {
           loadSummary();
           loadBody();
         });
@@ -868,6 +1363,18 @@ WB.views = WB.views || {};
             ${meta.invoice_types.map((t) => `<option value="${t}" ${state.invoice_type === t ? 'selected' : ''}>${t}</option>`).join('')}
           </select></div>
         <label class="field" style="cursor:pointer"><input type="checkbox" id="f-unlinked" ${state.unlinked ? 'checked' : ''}> 只看待关联</label>
+        <div class="field"><label>随票凭证</label>
+          <select id="f-doc">
+            ${[
+              ['', '全部'],
+              ['missing', '缺应附单据'],
+              ['complete', '应附已齐备'],
+              ['has_docs', '已附补充材料'],
+              ['no_required', '无要求'],
+            ]
+              .map(([v, n]) => `<option value="${v}" ${state.doc_status === v ? 'selected' : ''}>${n}</option>`)
+              .join('')}
+          </select></div>
         <div class="field"><label>开票日期</label>
           <input type="date" id="f-from" value="${state.date_from}"> <span class="muted">~</span>
           <input type="date" id="f-to" value="${state.date_to}"></div>
@@ -876,7 +1383,7 @@ WB.views = WB.views || {};
         <button class="btn btn-sm" id="btn-print">打印清单</button>
         ${WB.can('invoice.write') ? '<button class="btn btn-sm" id="btn-batch">批量查验</button>' : ''}
         <button class="btn btn-sm" id="btn-export">导出 CSV</button>
-        ${WB.can('invoice.write') ? '<button class="btn btn-sm btn-primary" id="btn-new">+ 登记发票</button>' : ''}`
+        ${WB.can('invoice.write') ? '<button class="btn btn-sm" id="btn-batch-new">批量登记</button><button class="btn btn-sm btn-primary" id="btn-new">+ 登记发票</button>' : ''}`
             : `<span class="muted" style="font-size:12.5px">重复报销检测会扫描全部发票号码，无需筛选条件。</span>
         <div class="spacer"></div>
         <button class="btn btn-sm" id="btn-refresh">重新扫描</button>`
@@ -909,6 +1416,10 @@ WB.views = WB.views || {};
           state.unlinked = e.target.checked;
           reload();
         };
+        U.qs('#f-doc', tb).onchange = (e) => {
+          state.doc_status = e.target.value;
+          reload();
+        };
         ['#f-from', '#f-to'].forEach((s, i) => {
           U.qs(s, tb).onchange = (e) => {
             state[i === 0 ? 'date_from' : 'date_to'] = e.target.value;
@@ -916,7 +1427,7 @@ WB.views = WB.views || {};
           };
         });
         U.qs('#f-reset', tb).onclick = () => {
-          Object.assign(state, { q: '', check_status: '', invoice_type: '', unlinked: false, date_from: '', date_to: '', page: 1 });
+          Object.assign(state, { q: '', check_status: '', invoice_type: '', unlinked: false, doc_status: '', date_from: '', date_to: '', page: 1 });
           WB.rerender();
         };
         const newBtn = U.qs('#btn-new', tb);
@@ -925,6 +1436,13 @@ WB.views = WB.views || {};
             loadSummary();
             loadBody();
           });
+        const batchNewBtn = U.qs('#btn-batch-new', tb);
+        if (batchNewBtn)
+          batchNewBtn.onclick = () =>
+            openBatchForm(meta, () => {
+              loadSummary();
+              loadBody();
+            });
         const batchBtn = U.qs('#btn-batch', tb);
         if (batchBtn) batchBtn.onclick = async () => {
           const ids = U.qsa('.ck-row', bodyHost).filter((c) => c.checked).map((c) => Number(c.value));
@@ -956,6 +1474,6 @@ WB.views = WB.views || {};
 
   /* v2.8.0：供「扫码核验」等外部入口直接打开发票详情（复用发票编辑表单） */
   WB.openInvoice = async (id) => openForm(await api.invoice(id), WB.meta);
-  /* 供报销单详情等外部入口直接打开发票影像（只查看，不进编辑表单） */
-  WB.viewInvoiceAttachments = (inv, onChanged) => openAttachments(inv, onChanged);
+  /* 供报销单详情等外部入口直接打开发票凭证（只查看，不进编辑表单） */
+  WB.viewInvoiceAttachments = (inv, onChanged) => openDocs(inv, onChanged);
 })();

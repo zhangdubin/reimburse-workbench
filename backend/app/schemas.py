@@ -94,6 +94,8 @@ class CategoryIn(BaseModel):
     monthly_limit: Money = 0
     tax_rate: Money = 0
     acc_subject: str | None = None
+    # v2.9.22：应附单据（itinerary/folio/other），空=不作要求
+    required_doc: str | None = None
     active: bool = True
     remark: str | None = None
 
@@ -109,6 +111,7 @@ class CategoryOut(ORMBase):
     monthly_limit: Money = 0
     tax_rate: Money = 0
     acc_subject: str | None = None
+    required_doc: str | None = None
     active: bool = True
     remark: str | None = None
 
@@ -310,6 +313,12 @@ class InvoiceIn(BaseModel):
     remark: str | None = None
 
 
+class InvoiceBatchIn(BaseModel):
+    """批量登记发票（v2.9.22）：一次提交多张，逐张落库并各自做重复检测。"""
+
+    items: list[InvoiceIn] = Field(default_factory=list)
+
+
 class InvoiceOut(ORMBase):
     id: int
     invoice_no: str
@@ -338,6 +347,11 @@ class InvoiceOut(ORMBase):
     recognize_score: float | None = None
     recognize_from: str | None = None
     attachment_count: int = 0
+    # v2.9.22：随票凭证（行程单/消费水单等）的齐备情况
+    doc_kinds: list[str] = Field(default_factory=list)
+    required_doc: str | None = None
+    required_doc_label: str | None = None
+    doc_status: str = "none"  # ok=已附齐 / missing=缺件 / none=无要求
     remark: str | None = None
     created_at: datetime | None = None
 

@@ -732,6 +732,84 @@ try {
     writeFileSync(`${OUT}/${key}.png`, Buffer.from(shot.data, 'base64'));
   }
 
+  /* ---- 发票：批量登记 + 随票凭证（v2.9.22） ---- */
+  if (EXPECT.includes('invoices') && !MOBILE) {
+    console.log('\n\x1b[1m== 发票 · 批量登记与随票凭证 ==\x1b[0m');
+    await cdp.eval(`location.hash = '#/invoices'`);
+    await sleep(1700);
+    const canWriteInv = ROLE === '管理员' || ROLE === '财务';
+    const iv = await cdp.eval(`({
+      heads: [...document.querySelectorAll('#view-inner table.tbl thead th')].map(e => e.textContent.trim()),
+      batchBtn: !!document.querySelector('#btn-batch-new'),
+      docOptions: document.querySelector('#f-doc') ? document.querySelector('#f-doc').options.length : 0,
+    })`);
+    assert('发票台账 · 新增「随票凭证」列', iv.heads.includes('随票凭证'), iv.heads.join('/'));
+    assert('发票台账 · 凭证筛选含 5 个口径', iv.docOptions >= 5, `${iv.docOptions} 个`);
+    assert(
+      `发票台账 · 批量登记入口${canWriteInv ? '存在' : '对只读角色隐藏'}`,
+      canWriteInv ? iv.batchBtn === true : iv.batchBtn === false
+    );
+
+    if (canWriteInv) {
+      const beforeBatch = cdp.errors.length;
+      await cdp.eval(`document.querySelector('#btn-batch-new').click()`);
+      await cdp.waitFor(`!!document.querySelector('.modal-mask #bd-file')`, {
+        timeout: 8000, label: '批量登记弹窗',
+      });
+      const dlg = await cdp.eval(`({
+        title: document.querySelector('.modal-head h3').textContent.trim(),
+        multiple: document.querySelector('#bd-file').multiple === true,
+        saveDisabled: document.querySelector('.modal-foot [data-save]').disabled,
+        hint: (document.querySelector('.modal-mask #bd-hint') || {}).textContent || '',
+      })`);
+      assert('批量登记弹窗可打开且文件支持多选',
+        /批量登记/.test(dlg.title) && dlg.multiple, `${dlg.title} multiple=${dlg.multiple}`);
+      assert('未选文件时「全部保存」禁用', dlg.saveDisabled === true);
+      assert('弹窗提示可一并上传行程单 / 水单', /行程单/.test(dlg.hint), dlg.hint.slice(0, 46));
+      const shotBatch = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+      writeFileSync(`${OUT}/invoices-batch.png`, Buffer.from(shotBatch.data, 'base64'));
+      assert('批量登记弹窗无 JS 报错', cdp.errors.length === beforeBatch,
+        cdp.errors.slice(beforeBatch).join(' | ').slice(0, 160));
+      await cdp.eval(`document.querySelector('.modal-mask .modal-x').click()`);
+      await sleep(400);
+
+      const hasRow = await cdp.eval(
+        `!!document.querySelector('#view-inner tr[data-id] button[data-act="att"]')`
+      );
+      if (hasRow) {
+        const beforeDocs = cdp.errors.length;
+        await cdp.eval(`document.querySelector('#view-inner tr[data-id] button[data-act="att"]').click()`);
+        await cdp.waitFor(
+          `!!document.querySelector('.modal-mask .doc-group, .modal-mask #doc-list .empty')`,
+          { timeout: 10000, label: '随票凭证弹窗' }
+        );
+        const doc = await cdp.eval(`({
+          title: document.querySelector('.modal-head h3').textContent.trim(),
+          kindOptions: document.querySelector('#doc-kind') ? document.querySelector('#doc-kind').options.length : 0,
+          multi: document.querySelector('#doc-file') ? document.querySelector('#doc-file').multiple === true : false,
+          groups: [...document.querySelectorAll('.modal-mask .doc-group-head')].map(e => e.textContent.replace(/\\s+/g, ' ').trim()),
+          emptyText: (document.querySelector('.modal-mask #doc-list .empty') || {}).textContent || '',
+          note: (document.querySelector('.modal-mask .doc-note') || {}).textContent || '',
+        })`);
+        assert('随票凭证弹窗可打开', /随票凭证/.test(doc.title), doc.title);
+        // 无附件的票走空态分支；有附件时按 4 类分区（上传后的分组断言在交互段里）
+        assert('凭证弹窗：有附件按 4 类分区，无附件给空态',
+          doc.groups.length === 4 || /还没有上传/.test(doc.emptyText),
+          `${doc.groups.length} 组 / ${doc.emptyText.trim().slice(0, 20)}`);
+        assert('凭证可一次选择多份', doc.multi === true);
+        assert('凭证类型下拉含 4 类', doc.kindOptions === 4, String(doc.kindOptions));
+        const shotDocs = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+        writeFileSync(`${OUT}/invoices-docs.png`, Buffer.from(shotDocs.data, 'base64'));
+        assert('凭证弹窗无 JS 报错', cdp.errors.length === beforeDocs,
+          cdp.errors.slice(beforeDocs).join(' | ').slice(0, 160));
+        await cdp.eval(`document.querySelector('.modal-mask .modal-x').click()`);
+        await sleep(300);
+      } else {
+        skip('随票凭证弹窗', '当前筛选结果里没有发票行');
+      }
+    }
+  }
+
   /* ---- 角色相关的按钮可见性 ---- */
   phase('逐视图遍历后');
   console.log('\n\x1b[1m== 角色按钮可见性 ==\x1b[0m');
@@ -834,6 +912,17 @@ try {
       regFilled.seller === '深圳市云图科技有限公司' && regFilled.date === '2026-09-12',
       `${regFilled.seller} / ${regFilled.date}`);
     assert('登记发票 · 回显已填入项数', /填入/.test(regFilled.hint), regFilled.hint.trim().slice(0, 40));
+
+    // 登记时就能把行程单/水单一起交上来（v2.9.22），不必保存后再去凭证弹窗补
+    const regDocs = await cdp.eval(`({
+      picker: !!document.querySelector('.modal-mask #v-docfile'),
+      multiple: (document.querySelector('.modal-mask #v-docfile') || {}).multiple === true,
+      kinds: document.querySelector('.modal-mask #v-dockind') ? document.querySelector('.modal-mask #v-dockind').options.length : 0,
+      hint: (document.querySelector('.modal-mask #v-dochint') || {}).textContent || '',
+    })`);
+    assert('登记发票 · 可随票上传行程单 / 水单', regDocs.picker && regDocs.multiple, JSON.stringify(regDocs));
+    assert('登记发票 · 凭证类型可选 3 类（发票影像由本体自带）', regDocs.kinds === 3, String(regDocs.kinds));
+    assert('登记发票 · 说明凭证归属到本张发票', /本张发票/.test(regDocs.hint), regDocs.hint.slice(0, 30));
     const regShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
     writeFileSync(`${OUT}/invoices-register-recognize.png`, Buffer.from(regShot.data, 'base64'));
     // 只验识别回填，不保存——避免在验收库里留下脏数据
@@ -842,7 +931,7 @@ try {
   } else {
     assert('发票 · 非财务角色无登记按钮', invBtns.newBtn === false, `new=${invBtns.newBtn}`);
     assert('发票 · 非财务角色无批量勾选', invBtns.checkBox === false);
-    assert('发票 · 非财务角色仍可查看影像', invBtns.rowActs.includes('影像'), invBtns.rowActs.join('/'));
+    assert('发票 · 非财务角色仍可查看随票凭证', invBtns.rowActs.some((t) => t.startsWith('凭证')), invBtns.rowActs.join('/'));
   }
 
   /* ---- 费用管理子页签（按角色过滤） ---- */
@@ -1192,9 +1281,9 @@ try {
     writeFileSync(`${OUT}/audit.png`, Buffer.from(ashot.data, 'base64'));
   }
 
-  /* ---- 发票影像：真实上传 + 列表回显（CDP 直接投递文件） ---- */
+  /* ---- 随票凭证：真实上传 + 按类型归档 + 删除（CDP 直接投递文件） ---- */
   if (['财务', '管理员'].includes(ROLE)) {
-    console.log('\n\x1b[1m== 交互：发票影像上传 ==\x1b[0m');
+    console.log('\n\x1b[1m== 交互：随票凭证上传 ==\x1b[0m');
     await cdp.eval(`location.hash = '#/invoices'`);
     await sleep(1600);
     // 页签选择在会话内保留，前面「重复检测」段把它切走了，这里显式切回台账
@@ -1210,63 +1299,87 @@ try {
       const tr = [...document.querySelectorAll('#iv-body table.tbl tbody tr[data-id]')]
         .find(r => r.textContent.includes('24417000000000101'));
       if (!tr) return 'no-row';
-      const b = [...tr.querySelectorAll('button[data-act]')].find(x => x.textContent.trim() === '影像');
+      const b = [...tr.querySelectorAll('button[data-act]')].find(x => x.textContent.trim().startsWith('凭证'));
       if (!b) return 'no-button';
       b.click();
       return 'ok';
     })()`);
-    assert('找到一张无附件的发票并打开影像弹窗', picked === 'ok', picked);
-    await cdp.waitFor(`document.querySelector('#att-list')`, { label: '影像弹窗' });
+    assert('找到一张无附件的发票并打开随票凭证弹窗', picked === 'ok', picked);
+    await cdp.waitFor(`document.querySelector('#doc-list')`, { label: '凭证弹窗' });
     await sleep(1200);
     const attModal = await cdp.eval(`({
       title: document.querySelector('.modal-head h3').textContent,
-      hasPicker: !!document.querySelector('#att-file'),
-      accept: (document.querySelector('#att-file')||{}).accept || '',
-      empty: !!document.querySelector('#att-list .empty'),
+      hasPicker: !!document.querySelector('#doc-file'),
+      accept: (document.querySelector('#doc-file')||{}).accept || '',
+      multiple: (document.querySelector('#doc-file')||{}).multiple === true,
+      kindCount: document.querySelector('#doc-kind') ? document.querySelector('#doc-kind').options.length : 0,
+      empty: !!document.querySelector('#doc-list .empty'),
     })`);
-    assert('影像弹窗包含上传控件', attModal.hasPicker === true, attModal.accept);
-    assert('影像弹窗限定了可上传类型', /pdf/.test(attModal.accept) && /png/.test(attModal.accept), attModal.accept);
-    assert('未上传前影像列表为空', attModal.empty === true);
+    assert('凭证弹窗包含上传控件', attModal.hasPicker === true, attModal.accept);
+    assert('凭证弹窗限定了可上传类型', /pdf/.test(attModal.accept) && /png/.test(attModal.accept), attModal.accept);
+    assert('凭证支持一次选多个文件', attModal.multiple === true);
+    assert('凭证类型可选 4 类', attModal.kindCount === 4, String(attModal.kindCount));
+    assert('未上传前凭证列表为空', attModal.empty === true);
 
     await cdp.send('DOM.enable');
-    const doc = await cdp.send('DOM.getDocument', { depth: -1 });
-    const found = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#att-file' });
-    await cdp.send('DOM.setFileInputFiles', { files: [SAMPLE] , nodeId: found.nodeId });
+    const doc0 = await cdp.send('DOM.getDocument', { depth: -1 });
+    const found = await cdp.send('DOM.querySelector', { nodeId: doc0.root.nodeId, selector: '#doc-file' });
+    await cdp.send('DOM.setFileInputFiles', { files: [SAMPLE], nodeId: found.nodeId });
 
     // 上传成功后会重新拉列表
     await cdp.waitFor(
-      `document.querySelectorAll('#att-list table.tbl tbody tr').length > 0`,
-      { timeout: 15000, label: '影像列表出现记录' }
+      `document.querySelectorAll('#doc-list table.tbl tbody tr').length > 0`,
+      { timeout: 15000, label: '凭证列表出现记录' }
     );
     // 图片要在列表渲染后被逐个取回 blob（受保护接口），存在异步窗口，
     // 这里等它落地再断言，避免和渲染抢跑
     await cdp
-      .waitFor(`!!(document.querySelector('#att-list [data-view]')||{}).dataset?.blob`, {
+      .waitFor(`!!(document.querySelector('#doc-list [data-view]')||{}).dataset?.blob`, {
         timeout: 12000,
         label: '图片取回 blob',
       })
       .catch(() => {});
     const attRows = await cdp.eval(`({
-      rows: document.querySelectorAll('#att-list table.tbl tbody tr').length,
-      name: (document.querySelector('#att-list table.tbl tbody tr td')||{}).textContent || '',
-      acts: [...document.querySelectorAll('#att-list .row-actions button')].map(b=>b.textContent.trim()),
-      hasBlobPreview: !!document.querySelector('#att-list [data-view]') && !!document.querySelector('#att-list [data-view]').dataset.blob,
+      rows: document.querySelectorAll('#doc-list table.tbl tbody tr').length,
+      acts: [...document.querySelectorAll('#doc-list .row-actions button')].map(b=>b.textContent.trim()),
+      hasBlobPreview: !!document.querySelector('#doc-list [data-view]') && !!document.querySelector('#doc-list [data-view]').dataset.blob,
     })`);
-    assert('影像上传后列表出现记录', attRows.rows >= 1, `${attRows.rows} 条 / ${attRows.name.trim()}`);
-    assert('影像提供预览与下载', attRows.acts.includes('预览') && attRows.acts.includes('下载'), attRows.acts.join('/'));
+    assert('凭证上传后列表出现记录', attRows.rows >= 1, `${attRows.rows} 条`);
+    assert('凭证提供预览与下载', attRows.acts.includes('预览') && attRows.acts.includes('下载'), attRows.acts.join('/'));
     assert('图片已取回 blob 供预览（受保护接口需鉴权）', attRows.hasBlobPreview === true);
     const atshot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
     writeFileSync(`${OUT}/invoice-attachments.png`, Buffer.from(atshot.data, 'base64'));
 
-    // 删除刚上传的影像，保持验收数据干净
-    await cdp.eval(
-      `[...document.querySelectorAll('#att-list .row-actions button')].find(b => b.textContent.trim()==='删除').click()`
-    );
-    await cdp.waitFor(`document.querySelector('.modal-foot [data-ok]')`, { label: '删除确认' });
-    await cdp.eval(`document.querySelector('.modal-foot [data-ok]').click()`);
-    await sleep(1200);
-    const afterDel = await cdp.eval(`document.querySelectorAll('#att-list table.tbl tbody tr').length`);
-    assert('影像可删除', afterDel === 0, `${afterDel} 条`);
+    // 再传一份「行程单」：验证按类型归档到独立分组（v2.9.22 的核心诉求）
+    await cdp.eval(`(() => { const s = document.querySelector('#doc-kind'); s.value = 'itinerary'; return true; })()`);
+    const doc1 = await cdp.send('DOM.getDocument', { depth: -1 });
+    const found2 = await cdp.send('DOM.querySelector', { nodeId: doc1.root.nodeId, selector: '#doc-file' });
+    await cdp.send('DOM.setFileInputFiles', { files: [SAMPLE], nodeId: found2.nodeId });
+    await cdp.waitFor(`document.querySelectorAll('#doc-list table.tbl tbody tr').length >= 2`, {
+      timeout: 15000, label: '行程单入库',
+    });
+    const groups = await cdp.eval(`[...document.querySelectorAll('.modal-mask .doc-group')].map(g => ({
+      head: (g.querySelector('.doc-group-head')||{}).textContent.replace(/\\s+/g,' ').trim() || '',
+      rows: g.querySelectorAll('table.tbl tbody tr').length,
+    }))`);
+    assert('凭证按类型归档：发票影像 1 份', /发票影像/.test(groups[0]?.head || '') && groups[0]?.rows === 1,
+      JSON.stringify(groups[0] || {}));
+    assert('凭证按类型归档：行程单独立成组 1 份', /行程单/.test(groups[1]?.head || '') && groups[1]?.rows === 1,
+      JSON.stringify(groups[1] || {}));
+    const docShot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    writeFileSync(`${OUT}/invoice-docs-grouped.png`, Buffer.from(docShot.data, 'base64'));
+
+    // 删除刚上传的两份凭证，保持验收数据干净
+    for (let k = 0; k < 2; k += 1) {
+      await cdp.eval(
+        `[...document.querySelectorAll('#doc-list .row-actions button')].find(b => b.textContent.trim()==='删除').click()`
+      );
+      await cdp.waitFor(`document.querySelector('.modal-foot [data-ok]')`, { label: '删除确认' });
+      await cdp.eval(`document.querySelector('.modal-foot [data-ok]').click()`);
+      await sleep(1200);
+    }
+    const afterDel = await cdp.eval(`document.querySelectorAll('#doc-list table.tbl tbody tr').length`);
+    assert('凭证可删除', afterDel === 0, `${afterDel} 条`);
     await cdp.eval(`document.querySelector('.modal-x').click()`);
     await sleep(400);
   }

@@ -161,7 +161,7 @@ WB.views = WB.views || {};
       ${w ? batchBarHtml('个费用类型', '已被明细或发票引用的会自动跳过') : ''}
       <div class="table-wrap">
         <table class="tbl">
-          <thead><tr>${w ? '<th class="ck-col"><input type="checkbox" id="ck-all"></th>' : ''}<th>费用类型</th><th>编码</th><th>大类</th><th>需发票</th><th class="num">单笔限额</th><th class="num">单日限额</th><th class="num">月限额</th><th>启用</th><th style="width:1%">操作</th></tr></thead>
+          <thead><tr>${w ? '<th class="ck-col"><input type="checkbox" id="ck-all"></th>' : ''}<th>费用类型</th><th>编码</th><th>大类</th><th>需发票</th><th>应附单据</th><th class="num">单笔限额</th><th class="num">单日限额</th><th class="num">月限额</th><th>启用</th><th style="width:1%">操作</th></tr></thead>
           <tbody>
             ${cats
               .map(
@@ -171,6 +171,7 @@ WB.views = WB.views || {};
               <td class="mono muted">${U.esc(c.code || '—')}</td>
               <td><span class="chip">${U.esc(c.group_name || '未分类')}</span></td>
               <td>${c.requires_invoice ? '<span class="badge b-blue">需要</span>' : '<span class="badge b-gray">可免</span>'}</td>
+              <td>${c.required_doc_label ? `<span class="badge b-orange">${U.esc(c.required_doc_label)}</span>` : '<span class="muted">—</span>'}</td>
               <td class="num">${c.single_limit ? U.money(c.single_limit) : '<span class="muted">不限</span>'}</td>
               <td class="num">${c.daily_limit ? U.money(c.daily_limit) : '<span class="muted">不限</span>'}</td>
               <td class="num">${c.monthly_limit ? U.money(c.monthly_limit) : '<span class="muted">不限</span>'}</td>
@@ -194,6 +195,16 @@ WB.views = WB.views || {};
       { key: 'code', label: '编码' },
       { key: 'group_name', label: '所属大类', type: 'select', options: groups.map((g) => ({ id: g, name: g })), numeric: false },
       { key: 'requires_invoice', label: '是否必须附发票', type: 'checkbox', hint: '需要提供发票' },
+      // v2.9.22：应附单据。市内交通要行程单、住宿要消费水单，发票台账据此提示缺件
+      {
+        key: 'required_doc', label: '应附单据', type: 'select', numeric: false,
+        placeholder: '不作要求',
+        options: [
+          { id: 'itinerary', name: '行程单（如滴滴行程明细）' },
+          { id: 'folio', name: '消费水单（如酒店账单）' },
+          { id: 'other', name: '其他材料' },
+        ],
+      },
       { key: 'single_limit', label: '单笔限额(元)', type: 'number' },
       { key: 'daily_limit', label: '单人单日限额(元)', type: 'number' },
       { key: 'monthly_limit', label: '单人月度限额(元)', type: 'number' },

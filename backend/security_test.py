@@ -403,8 +403,22 @@ st, me, _ = req("GET", "/api/auth/me", token=TOKEN)
 admin_id = me["user"]["id"]
 expect("不能删除当前登录账号", "DELETE", f"/api/users/{admin_id}", 400, token=TOKEN)
 
-# 最后一个管理员不可降级
+# 最后一个管理员不可降级。
+# 前提是「库里只有当前这一个管理员」；UI 验收（ui_fixture.py）会造一个备用管理员
+# admin2，此时后端按设计允许停用 admin——这条用例就会把正在登录的账号真的停掉，
+# 后面所有用例跟着崩。所以先探测并临时停用其余管理员，测完立刻恢复。
+_, _users, _ = req("GET", "/api/users", params={"role": "管理员"}, token=TOKEN)
+_spares = [
+    u for u in (_users or {}).get("items", [])
+    if u["id"] != admin_id and u.get("active")
+]
+for u in _spares:
+    req("PUT", f"/api/users/{u['id']}", {"active": False}, token=TOKEN)
 expect("不能停用唯一的管理员", "PUT", f"/api/users/{admin_id}", {"active": False}, 400, token=TOKEN)
+for u in _spares:
+    req("PUT", f"/api/users/{u['id']}", {"active": True}, token=TOKEN)
+if _spares:
+    print(f"  \033[33m注意\033[0m 库中存在备用管理员 {[u['username'] for u in _spares]}，已临时停用并恢复")
 
 expect("弱密码被拒", "POST", "/api/users",
        {"username": f"weak_{suffix}", "name": "弱密码", "role": "申请人", "password": "123"},

@@ -38,6 +38,23 @@ SOURCE_MAIL = "邮箱收票"
 SOURCE_IMPORT = "批量导入"
 SOURCES = [SOURCE_MANUAL, SOURCE_MAIL, SOURCE_IMPORT]
 
+# ---- 发票凭证类型（v2.9.22）----
+# 一张发票要能同时挂多类材料：发票本体之外，市内交通要行程单、住宿要消费水单。
+# 统一用「附件 + 类型」表达，避免为每类单据建独立表和多对多关系。
+DOC_INVOICE = "invoice"          # 发票影像（发票本体）
+DOC_ITINERARY = "itinerary"      # 行程单（滴滴/高德等市内交通行程明细）
+DOC_FOLIO = "folio"              # 消费水单（酒店账单 folio、消费明细）
+DOC_OTHER = "other"              # 其他佐证材料
+DOC_KINDS = [DOC_INVOICE, DOC_ITINERARY, DOC_FOLIO, DOC_OTHER]
+DOC_KIND_LABELS = {
+    DOC_INVOICE: "发票影像",
+    DOC_ITINERARY: "行程单",
+    DOC_FOLIO: "消费水单",
+    DOC_OTHER: "其他材料",
+}
+# 费用类型可要求的「应附单据」：发票本体不算，只要求补充材料
+REQUIRED_DOC_KINDS = [DOC_ITINERARY, DOC_FOLIO, DOC_OTHER]
+
 # ---- 收票结果 ----
 IMPORT_OK = "成功"
 IMPORT_PARTIAL = "部分成功"
@@ -147,6 +164,9 @@ class ExpenseCategory(Base):
     # v2.9.17：进项税抵扣场景要算税价分离；财务对账要按科目走
     tax_rate: Mapped[float] = mapped_column(MONEY, default=0)      # 默认 0=免税/不计税
     acc_subject: Mapped[str | None] = mapped_column(String(64), default=None)  # 会计科目编码
+    # v2.9.22：应附单据。市内交通=行程单、住宿=消费水单；空=不作要求。
+    # 值取自 models.REQUIRED_DOC_KINDS（itinerary/folio/other）
+    required_doc: Mapped[str | None] = mapped_column(String(16), default=None)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     remark: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -426,6 +446,8 @@ class InvoiceAttachment(Base):
     )
     filename: Mapped[str] = mapped_column(String(255))  # 原始文件名，仅用于展示与下载命名
     stored_name: Mapped[str] = mapped_column(String(255), unique=True)  # 磁盘上的实际文件名
+    # v2.9.22：凭证类型（发票影像/行程单/消费水单/其他材料），见 DOC_KIND_LABELS
+    kind: Mapped[str] = mapped_column(String(16), default=DOC_INVOICE)
     size: Mapped[int] = mapped_column(Integer, default=0)
     mime: Mapped[str | None] = mapped_column(String(128), default=None)
     uploaded_by: Mapped[str | None] = mapped_column(String(64), default=None)

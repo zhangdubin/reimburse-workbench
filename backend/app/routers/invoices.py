@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_
+from sqlalchemy import exists, func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from .. import filestore as fs
@@ -42,6 +42,7 @@ def _load(db: Session, oid: int) -> m.Invoice:
         .options(
             selectinload(m.Invoice.category),
             selectinload(m.Invoice.reimbursement),
+            selectinload(m.Invoice.attachments),
         )
         .filter(m.Invoice.id == oid)
         .first()
@@ -69,6 +70,36 @@ def _find_duplicates(db: Session, invoice_no: str, code: str | None, exclude_id:
     if exclude_id:
         q = q.filter(m.Invoice.id != exclude_id)
     return q.all()
+
+
+def _doc_cond(status: str) -> list:
+    """按随票凭证齐备情况构造过滤条件（v2.9.22）。
+
+    「应附什么」取自费用类型上的 required_doc，「附了没有」看附件 kind 是否命中，
+    不额外落状态列——否则两处数据一旦不同步，报表口径就会打架。
+    """
+    req = m.ExpenseCategory.required_doc
+    required = (req.isnot(None), req != "")
+    has_req = exists().where(
+        m.InvoiceAttachment.invoice_id == m.Invoice.id,
+        m.InvoiceAttachment.kind == req,
+    )
+    has_extra = exists().where(
+        m.InvoiceAttachment.invoice_id == m.Invoice.id,
+        m.InvoiceAttachment.kind != m.DOC_INVOICE,
+    )
+    if status == "missing":  # 有要求但没附
+        return [*required, ~has_req]
+    if status == "complete":  # 没有要求的也算齐备
+        return [or_(req.is_(None), req == "", has_req)]
+    if status == "has_docs":  # 至少附了一份补充材料（行程单/水单/其他）
+        return [has_extra]
+    if status in ("missing_itinerary", "missing_folio", "missing_other"):
+        kind = status.split("_", 1)[1]
+        return [req == kind, ~has_req]
+    if status == "no_required":
+        return [or_(req.is_(None), req == "")]
+    return []
 
 
 def _remove_files(db: Session, inv: m.Invoice) -> int:
@@ -163,6 +194,7 @@ def list_invoices(
     category_id: int | None = None,
     reimbursement_id: int | None = None,
     unlinked: bool = False,
+    doc_status: str | None = Query(None, description="随票凭证齐备情况：missing/complete/has_docs/..."),
     date_from: str | None = None,
     date_to: str | None = None,
     amount_min: float | None = None,
@@ -175,7 +207,11 @@ def list_invoices(
 ):
     query = (
         db.query(m.Invoice)
-        .options(selectinload(m.Invoice.category), selectinload(m.Invoice.reimbursement))
+        .options(
+            selectinload(m.Invoice.category),
+            selectinload(m.Invoice.reimbursement),
+            selectinload(m.Invoice.attachments),
+        )
         .filter(*sec.invoice_scope_conds(user))
     )
     if q:
@@ -199,6 +235,13 @@ def list_invoices(
         query = query.filter(m.Invoice.reimbursement_id == reimbursement_id)
     if unlinked:
         query = query.filter(m.Invoice.reimbursement_id.is_(None))
+    if doc_status:
+        conds = _doc_cond(doc_status)
+        if conds:
+            # 条件里用到费用类型的 required_doc，需要把它 join进来（一对一，不会放大行数）
+            query = query.outerjoin(
+                m.ExpenseCategory, m.Invoice.category_id == m.ExpenseCategory.id
+            ).filter(*conds)
     if date_from:
         query = query.filter(m.Invoice.invoice_date >= date_from)
     if date_to:
@@ -249,12 +292,19 @@ def invoice_summary(
     unlinked = scoped(
         db.query(func.count(m.Invoice.id)).filter(m.Invoice.reimbursement_id.is_(None))
     ).scalar()
+    # v2.9.22：应附行程单/水单但还没附的发票张数
+    missing_doc = scoped(
+        db.query(func.count(m.Invoice.id))
+        .outerjoin(m.ExpenseCategory, m.Invoice.category_id == m.ExpenseCategory.id)
+        .filter(*_doc_cond("missing"))
+    ).scalar()
     dup = _duplicate_list(db, scope)
     return {
         "total_count": total_count,
         "total_amount": ser.money(total_amount),
         "total_tax": ser.money(tax_amount),
         "unlinked_count": unlinked,
+        "missing_doc_count": missing_doc,
         "duplicate_count": len(dup),
         "duplicates": dup,
         "by_status": [
@@ -366,12 +416,8 @@ def get_invoice(
     return ser.invoice_out(obj)
 
 
-@router.post("", response_model=s.InvoiceOut, status_code=201)
-def create_invoice(
-    payload: s.InvoiceIn,
-    user: m.AppUser = Depends(_can_write),
-    db: Session = Depends(get_db),
-):
+def _create_one(db: Session, payload: s.InvoiceIn, user: m.AppUser) -> m.Invoice:
+    """落库一张发票（含重复检测），单张登记与批量登记共用。"""
     obj = m.Invoice(**payload.model_dump(), created_by=user.username)
     dups = _find_duplicates(db, payload.invoice_no, payload.invoice_code)
     if dups:
@@ -380,6 +426,67 @@ def create_invoice(
     db.add(obj)
     db.flush()
     _sync_reimbursement(db, obj.reimbursement_id)
+    return obj
+
+
+@router.post("/batch", response_model=dict, status_code=201, dependencies=[Depends(_can_write)])
+def batch_create_invoices(
+    payload: s.InvoiceBatchIn,
+    user: m.AppUser = Depends(_can_write),
+    db: Session = Depends(get_db),
+):
+    """批量登记发票（v2.9.22）。
+
+    财务一次拿到一叠票（或一串平台行程单）时，逐张提交流程太慢。
+    这里按顺序逐张落库：单张数据不合法只跳过它并在 failed 里说明原因，
+    已成功的不受影响；重复号码仍照常标「异常」，只是并入 duplicate_count 统计。
+    """
+    if not payload.items:
+        raise HTTPException(400, "没有要登记的发票")
+    if len(payload.items) > 200:
+        raise HTTPException(400, "单次最多登记 200 张，请分批操作")
+
+    created: list[dict] = []
+    failed: list[dict] = []
+    duplicate = 0
+    for idx, it in enumerate(payload.items):
+        if not (it.invoice_no or "").strip():
+            failed.append({"index": idx, "invoice_no": "", "reason": "缺少发票号码"})
+            continue
+        if ser.money(it.amount) <= 0:
+            failed.append({"index": idx, "invoice_no": it.invoice_no, "reason": "价税合计必须大于 0"})
+            continue
+        try:
+            # savepoint：单张失败只回滚它自己，前面已登记的照旧
+            with db.begin_nested():
+                obj = _create_one(db, it, user)
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"index": idx, "invoice_no": it.invoice_no, "reason": str(exc)[:120]})
+            continue
+        dup = obj.check_status == m.CHECK_BAD
+        duplicate += 1 if dup else 0
+        # 带 index：前端按原文件顺序回填 id，才能把行程单/水单挂到正确的发票上
+        created.append({"index": idx, "id": obj.id, "invoice_no": obj.invoice_no, "duplicate": dup})
+
+    db.commit()
+    return {
+        "ok": True,
+        "created_count": len(created),
+        "duplicate_count": duplicate,
+        "ids": [c["id"] for c in created],
+        "created": created,
+        "failed": failed,
+        "failed_count": len(failed),
+    }
+
+
+@router.post("", response_model=s.InvoiceOut, status_code=201)
+def create_invoice(
+    payload: s.InvoiceIn,
+    user: m.AppUser = Depends(_can_write),
+    db: Session = Depends(get_db),
+):
+    obj = _create_one(db, payload, user)
     db.commit()
     return ser.invoice_out(_load(db, obj.id))
 

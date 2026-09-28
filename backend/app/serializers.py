@@ -83,6 +83,9 @@ def category_out(o: m.ExpenseCategory) -> dict:
         "monthly_limit": money(o.monthly_limit),
         "tax_rate": money(o.tax_rate),
         "acc_subject": o.acc_subject,
+        # v2.9.22：应附单据（行程单/消费水单），空=不作要求
+        "required_doc": getattr(o, "required_doc", None) or None,
+        "required_doc_label": m.DOC_KIND_LABELS.get(getattr(o, "required_doc", None) or ""),
         "active": o.active,
         "remark": o.remark,
     }
@@ -218,6 +221,28 @@ def reimbursement_detail(o: m.Reimbursement) -> dict:
     return d
 
 
+def _doc_info(o: m.Invoice) -> dict:
+    """随票凭证齐备情况（v2.9.22）。
+
+    费用类型规定了应附单据（市内交通→行程单、住宿→消费水单），
+    这里把「要求什么 / 实际附了什么 / 是否齐备」一次性算出来，
+    前端台账、详情、报销单复核都直接用同一口径，不必各自拼装。
+    """
+    kinds: list[str] = []
+    for a in (o.attachments or []):
+        k = getattr(a, "kind", None) or m.DOC_INVOICE
+        if k not in kinds:
+            kinds.append(k)
+    req = (o.category.required_doc if o.category else None) or None
+    status = "ok" if req and req in kinds else ("missing" if req else "none")
+    return {
+        "doc_kinds": kinds,
+        "required_doc": req,
+        "required_doc_label": m.DOC_KIND_LABELS.get(req) if req else None,
+        "doc_status": status,
+    }
+
+
 def invoice_out(o: m.Invoice) -> dict:
     return {
         "id": o.id,
@@ -246,6 +271,7 @@ def invoice_out(o: m.Invoice) -> dict:
         "recognize_from": getattr(o, "recognize_from", None),
         # 有没有影像文件，前端据此决定是否显示「影像」按钮上的小圆点
         "attachment_count": len(o.attachments) if hasattr(o, "attachments") else 0,
+        **_doc_info(o),
         "remark": o.remark,
         "created_at": dt_s(o.created_at),
     }

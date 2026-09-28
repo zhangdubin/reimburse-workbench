@@ -76,6 +76,13 @@ CATEGORIES = [
     ("其他费用", "C0901", "其他费用", True, 5000, 0, 0),
 ]
 
+# v2.9.22：费用类型默认要求的「应附单据」。
+# 市内交通要行程单（滴滴等平台行程明细），住宿要消费水单（酒店账单）。
+REQUIRED_DOC_BY_CODE = {
+    "C0101": m.DOC_ITINERARY,  # 市内交通费
+    "C0201": m.DOC_FOLIO,      # 住宿费
+}
+
 CUSTOMERS = [
     ("深圳前海数字科技有限公司", "CRM001", "王建国", "信息技术", "互联网"),
     ("广州云启智能制造有限公司", "CRM002", "李慧", "智能制造", "制造业"),
@@ -249,6 +256,7 @@ def seed(db: Session, months: int = 12, orders: int = 620) -> dict:
         m.ExpenseCategory(
             name=n, code=c, group_name=g, requires_invoice=ri,
             single_limit=sl, daily_limit=dl, monthly_limit=ml,
+            required_doc=REQUIRED_DOC_BY_CODE.get(c),
         )
         for n, c, g, ri, sl, dl, ml in CATEGORIES
     ]

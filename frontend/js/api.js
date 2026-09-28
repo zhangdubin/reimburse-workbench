@@ -122,19 +122,29 @@ window.WB = window.WB || {};
     invoiceSummary: () => api.get('/api/invoices/summary'),
     invoiceMonthly: (params) => api.get('/api/invoices/monthly', params),
     createInvoice: (b) => api.post('/api/invoices', b),
+    /** 批量登记（v2.9.22）：一次提交多张，返回的 created 带 index，便于回挂凭证 */
+    createInvoicesBatch: (items) => api.post('/api/invoices/batch', { items }),
     updateInvoice: (id, b) => api.put(`/api/invoices/${id}`, b),
     deleteInvoice: (id) => api.del(`/api/invoices/${id}`),
     checkInvoice: (id) => api.post(`/api/invoices/${id}/check`, {}),
     batchCheck: (ids) => api.post('/api/invoices/batch-check', ids || null),
     linkInvoice: (id, params) => api.post(`/api/invoices/${id}/link`, {}, params),
 
-    /* 发票影像 */
+    /* 发票影像 / 随票凭证（kind：invoice 发票影像 / itinerary 行程单 / folio 水单 / other 其他） */
     attachments: (invoiceId) => api.get(`/api/invoices/${invoiceId}/attachments`),
-    uploadAttachment: (invoiceId, file) => {
+    uploadAttachment: (invoiceId, file, kind) => {
       const fd = new FormData();
       fd.append('file', file, file.name);
+      if (kind) fd.append('kind', kind);
       // 交给浏览器自己带 multipart boundary，不能手写 Content-Type
       return raw('POST', `/api/invoices/${invoiceId}/attachments`, { body: fd }).then((r) => r.json());
+    },
+    /** 一次传多份同类凭证（一张发票 + 一串行程单/水单的场景） */
+    uploadAttachments: (invoiceId, files, kind) => {
+      const fd = new FormData();
+      Array.from(files || []).forEach((f) => fd.append('files', f, f.name));
+      if (kind) fd.append('kind', kind);
+      return raw('POST', `/api/invoices/${invoiceId}/attachments/batch`, { body: fd }).then((r) => r.json());
     },
     deleteAttachment: (id) => api.del(`/api/attachments/${id}`),
 
