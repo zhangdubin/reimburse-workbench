@@ -488,6 +488,8 @@ def link_invoice(
 ):
     obj = _load(db, oid)
     old_rid = obj.reimbursement_id
+    # item_id=0：明确「不挂明细」（保留报销单关联、跳过自动匹配）；item_id=None：交给自动匹配
+    clear_item = item_id is not None and item_id <= 0
     if reimbursement_id is not None:
         r = db.get(m.Reimbursement, reimbursement_id)
         if not r:
@@ -497,9 +499,9 @@ def link_invoice(
             if not item or item.reimbursement_id != reimbursement_id:
                 raise HTTPException(400, "明细行不属于该报销单")
         obj.reimbursement_id = reimbursement_id
-        obj.item_id = item_id
+        obj.item_id = None if clear_item else item_id
         # 没指定明细行时按金额自动匹配，能命中的大多数票就不用再手工挂了
-        if not item_id:
+        if not item_id and not clear_item:
             _auto_match_item(db, obj, r)
         # 报销单金额与发票金额的一致性提示
         if obj.item_id:

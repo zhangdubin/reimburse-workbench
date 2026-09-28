@@ -330,7 +330,7 @@ WB.views = WB.views || {};
         </div>
 
         <div class="form-section">费用明细（${d.items.length} 条）</div>
-        <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px">
           <table class="tbl">
             <thead><tr><th>费用类型</th><th>发生日期</th><th>摘要</th><th class="num">税额</th><th class="num">金额</th><th class="num">发票</th></tr></thead>
             <tbody>
@@ -363,28 +363,40 @@ WB.views = WB.views || {};
         ${
           d.invoices.length
             ? `<div class="form-section" style="margin-top:16px;display:flex;align-items:center">关联发票（${d.invoices.length} 张）
+        <span class="muted" style="font-size:12px;margin-left:10px">同金额的多张发票请在「关联明细」里手动指定</span>
         ${
           WB.can('invoice.write') && d.invoices.some((v) => !v.item_id)
             ? `<span class="spacer"></span><button class="btn btn-xs" id="iv-match" title="按金额把发票挂到对应的费用明细行">按金额匹配明细</button>`
             : ''
         }
         </div>
-        <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px">
           <table class="tbl">
             <thead><tr><th>发票号码</th><th>类型</th><th>开票日期</th><th>销售方</th><th class="num">金额</th><th>关联明细</th><th>查验</th></tr></thead>
             <tbody>${d.invoices
               .map((v) => {
                 const it = v.item_id ? d.items.find((i) => i.id === v.item_id) : null;
+                const canMatch = WB.can('invoice.write');
+                const opts = d.items
+                  .map(
+                    (i, idx) =>
+                      `<option value="${i.id}" ${v.item_id === i.id ? 'selected' : ''}>${idx + 1}. ${U.esc(i.category_name || '未分类')} ${U.date(i.occur_date)} · ${U.money(i.amount)}</option>`
+                  )
+                  .join('');
                 return `<tr data-iv="${v.id}" style="cursor:pointer" title="点击查看发票">
-              <td class="mono">${U.esc(v.invoice_no)}</td>
-              <td class="muted">${U.esc(v.invoice_type)}</td>
+              <td class="mono iv-no" title="${U.esc(v.invoice_no)}">${U.esc(v.invoice_no)}</td>
+              <td class="muted nowrap">${U.esc(v.invoice_type)}</td>
               <td class="nowrap">${U.date(v.invoice_date)}</td>
               <td class="ellipsis muted">${U.esc(v.seller_name || '—')}</td>
               <td class="num amount">${U.money(v.amount)}</td>
               <td>${
-                it
-                  ? `<span class="muted">${U.esc(it.category_name || '明细')} · ${U.money(it.amount)}</span>`
-                  : '<span class="badge b-orange">未指定明细</span>'
+                canMatch
+                  ? `<select class="input iv-item-sel" data-iv="${v.id}" title="选择这张发票对应的费用明细行">
+                      <option value="0" ${!v.item_id ? 'selected' : ''}>未指定明细</option>${opts}
+                    </select>`
+                  : it
+                    ? `<span class="muted">${U.esc(it.category_name || '明细')} · ${U.money(it.amount)}</span>`
+                    : '<span class="badge b-orange">未指定明细</span>'
               }</td>
               <td>${U.badge(v.check_status)}</td>
             </tr>`;
@@ -431,6 +443,21 @@ WB.views = WB.views || {};
         };
         U.qsa('tr[data-iv], span[data-iv]', apiMod.el).forEach((el) => {
           el.onclick = () => openInvoiceRow(el.dataset.iv);
+        });
+        // 手动指定发票对应的明细行（同金额多张票自动匹配不了的场景）
+        U.qsa('select.iv-item-sel', apiMod.el).forEach((sel) => {
+          sel.onclick = (e) => e.stopPropagation();
+          sel.onchange = async () => {
+            sel.disabled = true;
+            try {
+              await api.linkInvoice(sel.dataset.iv, { reimbursement_id: d.id, item_id: Number(sel.value) });
+              U.toast(sel.value === '0' ? '已取消该发票的明细关联' : '已挂到所选明细行', 'success');
+              apiMod.close();
+              return openDetail(d.id, meta, reload);
+            } catch (e) {
+              sel.disabled = false;
+            }
+          };
         });
         const matchBtn = U.qs('#iv-match', apiMod.el);
         if (matchBtn)
