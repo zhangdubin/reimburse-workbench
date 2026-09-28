@@ -56,10 +56,26 @@ PARSE_EXT = {".pdf", ".ofd", ".xml", ".xlsx", ".xls", ".jpg", ".jpeg", ".png", "
 
 MONEY = r"([0-9][0-9,]*\.?[0-9]{0,2})"
 
-# 发票号码：数电票 20 位，老式 8 位；带上下文关键词时优先
-_RE_NO_CTX = re.compile(r"(?:发票号码|发票No|票据号码|InvoiceN(?:o|umber))[^0-9]{0,8}(\d{8,25})", re.I)
+# 发票号码：数电票 20 位，老式 8 位；带上下文关键词时优先。
+# 拍照件 OCR 常把 0 认成 O、1 认成 I/l，字符类里带上这些形近字，
+# 取出来再统一修回数字（见 _digits），否则整段号码直接丢掉。
+_NO_CHARS = r"([0-9OoIl]{8,25})"
+_RE_NO_CTX = re.compile(r"(?:发票号码|发票No|票据号码|InvoiceN(?:o|umber))[^0-9]{0,8}" + _NO_CHARS, re.I)
 _RE_NO_LONG = re.compile(r"(?<!\d)(\d{20})(?!\d)")
 _RE_NO_MID = re.compile(r"(?<!\d)(\d{12})(?!\d)")
+# 号码被 OCR 拆成「2631 7025 …」的碎片（对焦不实/纸张反光时常见）：
+# 要求至少 12 个「数字+分隔符」连缀，避免把日期之类的小数字串误认成票号
+_RE_NO_SPACED = re.compile(r"(?<![\d-])((?:\d[ \-]){11,25}\d)(?!\d)")
+
+# 长数字串里的形近字 -> 数字。合法票号/税号本来就是纯数字（税号字母位
+# 不含 I/O），所以映射不会破坏真实值。
+_DIGIT_FIX = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1"})
+
+
+def _digits(s: str) -> str:
+    """形近字修回数字；修完仍混有其他字母就原样返回，不硬猜。"""
+    fixed = (s or "").translate(_DIGIT_FIX)
+    return fixed if fixed.isdigit() else (s or "")
 
 # 发票代码：老式 10/12 位
 _RE_CODE_CTX = re.compile(r"(?:发票代码|票据代码|InvoiceCode)[^0-9]{0,8}(\d{10,12})", re.I)
@@ -84,6 +100,10 @@ _RE_DATE_CTX = re.compile(
     re.I,
 )
 _RE_DATE_ANY = re.compile(r"(20\d{2})\s*[-/年.]\s*(\d{1,2})\s*[-/月.]\s*(\d{1,2})")
+# 拍照件里日期数字也常被认成 O/I（如「2026年O7月I3日」），常规匹配失败时兜底
+_RE_DATE_ANY_FIX = re.compile(
+    r"(20[0-9OoIl]{2})\s*[-/年.]\s*([0-9OoIl]{1,2})\s*[-/月.]\s*([0-9OoIl]{1,2})"
+)
 
 # 购销方
 _RE_SELLER_CTX = re.compile(
@@ -147,6 +167,9 @@ OCR_LABEL_FIXES = [
     (re.compile(r"税[率车辛]"), "税率"),
     (re.compile(r"统一社会信用代[码吗馬]"), "统一社会信用代码"),
     (re.compile(r"纳税人识[别另]号"), "纳税人识别号"),
+    (re.compile(r"识[剔二]号"), "识别号"),
+    (re.compile(r"名[祢弥]"), "名称"),
+    (re.compile(r"价税合[汁]"), "价税合计"),
     (re.compile(r"开[具其]日期"), "开具日期"),
 ]
 
@@ -350,13 +373,15 @@ def extract_by_lines(text: str) -> dict:
                 continue
 
             if key == "invoice_no":
-                digits = re.sub(r"\D", "", value)
+                compact = re.sub(r"[\s\-]", "", value)
+                # 先修 OCR 形近字（O/l 之类）再去非数字，别把整段号码丢掉
+                digits = re.sub(r"\D", "", _digits(compact))
                 if 8 <= len(digits) <= 25:
                     fields.setdefault("invoice_no", digits)
                 continue
 
             if key == "invoice_code":
-                digits = re.sub(r"\D", "", value)
+                digits = re.sub(r"\D", "", _digits(re.sub(r"[\s\-]", "", value)))
                 # 数电票没有发票代码，别把号码抄成代码
                 if 10 <= len(digits) <= 12 and digits != fields.get("invoice_no"):
                     fields.setdefault("invoice_code", digits)
@@ -420,7 +445,12 @@ def _clean_name(value: str) -> str | None:
 
 
 def _clean_tax_no(value: str) -> str | None:
-    found = _RE_USCC.search(value.replace(" ", ""))
+    compact = (value or "").replace(" ", "")
+    found = _RE_USCC.search(compact)
+    if not found:
+        # USCC 字母表本就不含 I/O，出现即是 OCR 误认，修一轮再试
+        fixed = compact.translate(_DIGIT_FIX)
+        found = _RE_USCC.search(fixed)
     return found.group(1) if found else None
 
 
@@ -974,8 +1004,18 @@ def extract_by_patterns(text: str) -> dict:
     for regex in (_RE_NO_CTX, _RE_NO_LONG, _RE_NO_MID):
         m = regex.search(squeezed)
         if m:
-            fields["invoice_no"] = m.group(1)
-            break
+            no = _digits(m.group(1))
+            if no.isdigit():
+                fields["invoice_no"] = no
+                break
+    # 号码被 OCR 拆碎成带空格/连字符的片段：去掉分隔符后长度恰好是
+    # 合法票号（8/12/20 位）才认；日期加金额这类组合拼不出合法长度
+    if not fields.get("invoice_no"):
+        for m in _RE_NO_SPACED.finditer(squeezed):
+            no = m.group(1).replace(" ", "").replace("-", "")
+            if len(no) in (8, 12, 20):
+                fields["invoice_no"] = no
+                break
 
     # 发票代码（数电票没有代码，抓不到就是空）
     m = _RE_CODE_CTX.search(squeezed)
@@ -1022,8 +1062,10 @@ def extract_by_patterns(text: str) -> dict:
 
     # 开票日期
     m = _RE_DATE_CTX.search(squeezed) or _RE_DATE_ANY.search(squeezed)
+    if not m:
+        m = _RE_DATE_ANY_FIX.search(squeezed)
     if m:
-        got = _clean_date(m.group(1), m.group(2), m.group(3))
+        got = _clean_date(_digits(m.group(1)), _digits(m.group(2)), _digits(m.group(3)))
         if got:
             fields["invoice_date"] = got
 

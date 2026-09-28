@@ -150,6 +150,12 @@ def item_out(o: m.ReimbursementItem) -> dict:
         "description": o.description,
         "remark": o.remark,
         "invoice_count": len(o.invoices) if o.invoices is not None else 0,
+        # 明细级发票关联：前端详情页在「发票」列直接展示号码并可点击，
+        # 不用再让用户自己去关联发票表里对金额找。
+        "invoices": [
+            {"id": v.id, "invoice_no": v.invoice_no, "amount": money(v.amount)}
+            for v in (o.invoices or [])
+        ],
     }
 
 

@@ -114,6 +114,7 @@ window.WB = window.WB || {};
     updateReimbursement: (id, b) => api.put(`/api/reimbursements/${id}`, b),
     deleteReimbursement: (id) => api.del(`/api/reimbursements/${id}`),
     action: (id, act, body) => api.post(`/api/reimbursements/${id}/${act}`, body || {}),
+    matchItems: (id) => api.post(`/api/reimbursements/${id}/match-items`, {}),
 
     /* 发票 */
     invoices: (params) => api.get('/api/invoices', params),

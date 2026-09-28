@@ -531,6 +531,34 @@ def unpay(
     return ser.reimbursement_detail(_load(db, r.id))
 
 
+@router.post("/{oid}/match-items", response_model=dict)
+def match_items(
+    oid: int,
+    user: m.AppUser = Depends(sec.require_roles(m.ROLE_FINANCE, m.ROLE_ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """把已关联本单但没挂到明细行的发票，按金额批量补挂明细。
+
+    历史数据里大量发票只关联了报销单（item_id 为空），明细行的「发票」列
+    因此一直显示缺票。金额唯一命中的直接补挂；多行同金额的歧义场景不猜，
+    返回里说明剩多少张待人工处理。
+    """
+    r = _load(db, oid)
+    matched = 0
+    pending = 0
+    for v in r.invoices:
+        if v.item_id is not None:
+            continue
+        cands = [i for i in r.items if abs(ser.money(i.amount) - ser.money(v.amount)) <= 0.01]
+        if len(cands) == 1:
+            v.item_id = cands[0].id
+            matched += 1
+        else:
+            pending += 1
+    db.commit()
+    return {"ok": True, "matched": matched, "pending": pending}
+
+
 @router.get("/{oid}/logs", response_model=list[s.ApprovalLogOut])
 def get_logs(
     oid: int,

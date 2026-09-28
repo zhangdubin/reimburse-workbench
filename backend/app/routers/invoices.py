@@ -462,6 +462,23 @@ def batch_check(ids: list[int] | None = None, db: Session = Depends(get_db)):
     return {"checked": len(rows), "ok": ok, "bad": bad}
 
 
+def _auto_match_item(db: Session, obj: m.Invoice, r: m.Reimbursement) -> bool:
+    """按金额把发票自动挂到报销单的具体明细行。
+
+    关联时用户只选了报销单、没选明细（前端关联弹窗就只有单子列表），
+    导致「发票关联了单子却关联不到明细」，详情页明细行永远显示缺票。
+    规则：金额唯一命中的明细行直接挂上；多行同金额（比如两笔 395 拼一张 790）
+    有歧义就不猜，留给 match-items 接口或人工处理。
+    """
+    if obj.item_id is not None:
+        return False
+    cands = [i for i in r.items if abs(ser.money(i.amount) - ser.money(obj.amount)) <= 0.01]
+    if len(cands) != 1:
+        return False
+    obj.item_id = cands[0].id
+    return True
+
+
 @router.post("/{oid}/link", response_model=s.InvoiceOut, dependencies=[Depends(_can_write)])
 def link_invoice(
     oid: int,
@@ -481,9 +498,12 @@ def link_invoice(
                 raise HTTPException(400, "明细行不属于该报销单")
         obj.reimbursement_id = reimbursement_id
         obj.item_id = item_id
+        # 没指定明细行时按金额自动匹配，能命中的大多数票就不用再手工挂了
+        if not item_id:
+            _auto_match_item(db, obj, r)
         # 报销单金额与发票金额的一致性提示
-        if item_id:
-            item_obj = db.get(m.ReimbursementItem, item_id)
+        if obj.item_id:
+            item_obj = db.get(m.ReimbursementItem, obj.item_id)
             if abs(ser.money(item_obj.amount) - ser.money(obj.amount)) > 0.01:
                 obj.remark = (obj.remark or "") + f"｜注意：发票金额与明细行金额不一致"
         if r.status != m.ST_DRAFT:

@@ -170,8 +170,13 @@ def _get_rapid():
         return _rapid_engine
 
 
-def _load_image(data: bytes):
-    """字节 -> RGB numpy 数组。带上像素上限与 EXIF 方向纠正。"""
+def _load_image(data: bytes, enhance: bool = False):
+    """字节 -> RGB numpy 数组。带上像素上限与 EXIF 方向纠正。
+
+    enhance=True 时做拍照件增强：灰度 + 自动对比度 + 小图放大 + 锐化。
+    手机拍的发票常见光线不均、字小、对比度低，原始图首跑效果差时
+    用增强图再跑一遍往往能救回大量文字。
+    """
     import numpy as np
     from PIL import Image, ImageOps
 
@@ -186,6 +191,20 @@ def _load_image(data: bytes):
     if w * h > MAX_PIXELS:
         ratio = (MAX_PIXELS / (w * h)) ** 0.5
         img = img.resize((max(1, int(w * ratio)), max(1, int(h * ratio))))
+        w, h = img.size
+    if enhance:
+        from PIL import ImageFilter
+
+        try:
+            img = ImageOps.autocontrast(img.convert("L"), cutoff=1)
+        except Exception:  # noqa: BLE001
+            img = img.convert("L")
+        # 短边太小的照片（微信压缩件常见）放大后再识别，小字才够清晰
+        if min(w, h) < 1400:
+            scale = max(1.0, min(3.0, 1400 / max(1, min(w, h))))
+            resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.BICUBIC)
+            img = img.resize((int(w * scale), int(h * scale)), resample)
+        img = img.filter(ImageFilter.SHARPEN).convert("RGB")
     return np.array(img)
 
 
@@ -301,7 +320,11 @@ def is_image_name(name: str) -> bool:
 
 
 def ocr_image(data: bytes, backend: str = "") -> OcrResult | None:
-    """识别一张位图。任何异常都吞掉并返回 None —— OCR 失败不该让整条收票链路挂掉。"""
+    """识别一张位图。任何异常都吞掉并返回 None —— OCR 失败不该让整条收票链路挂掉。
+
+    首跑效果差（行数少或平均置信度低）时自动用增强图重跑一次，
+    两跑里取行数更多的结果 —— 行数是信息量最直接的信号。
+    """
     if not data:
         return None
     backend = backend or engine_name()
@@ -311,6 +334,15 @@ def ocr_image(data: bytes, backend: str = "") -> OcrResult | None:
     try:
         if backend == "rapidocr":
             lines, avg = _rapid_ocr(_load_image(data))
+            poor = len(lines) < 8 or avg < 0.85
+            if poor:
+                try:
+                    lines2, avg2 = _rapid_ocr(_load_image(data, enhance=True))
+                except Exception:  # noqa: BLE001
+                    lines2, avg2 = [], 0.0
+                if lines2 and (len(lines2) > len(lines) or (not lines and avg2 > 0)):
+                    lines, avg = lines2, avg2
+                    backend = f"{backend.split('+')[0]}+enh"
         elif backend == "tesseract":
             lines, avg = _tesseract_ocr(data)
         else:

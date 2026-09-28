@@ -203,6 +203,14 @@ class ItemIn(BaseModel):
     remark: str | None = None
 
 
+class ItemInvoiceBrief(BaseModel):
+    """明细行上挂的发票摘要（详情页「发票」列直接展示号码用）。"""
+
+    id: int
+    invoice_no: str
+    amount: Money = 0
+
+
 class ItemOut(ORMBase):
     id: int
     category_id: int | None = None
@@ -213,6 +221,7 @@ class ItemOut(ORMBase):
     description: str | None = None
     remark: str | None = None
     invoice_count: int = 0
+    invoices: list[ItemInvoiceBrief] = Field(default_factory=list)
 
 
 class ReimbursementIn(BaseModel):

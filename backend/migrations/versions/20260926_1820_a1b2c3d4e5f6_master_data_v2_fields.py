@@ -94,6 +94,8 @@ def upgrade() -> None:
             b.add_column(sa.Column("address", sa.String(255), nullable=True))
         if "emergency_contact" not in emp_cols:
             b.add_column(sa.Column("emergency_contact", sa.String(64), nullable=True))
+        if "remark" not in emp_cols:
+            b.add_column(sa.Column("remark", sa.Text(), nullable=True))
         if "updated_at" not in emp_cols:
             b.add_column(sa.Column("updated_at", sa.DateTime(), nullable=True,
                                   server_default=sa.func.now()))

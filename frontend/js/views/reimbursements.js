@@ -342,7 +342,16 @@ WB.views = WB.views || {};
                 <td class="muted">${U.esc(i.description || '—')}</td>
                 <td class="num muted">${U.money(i.tax_amount)}</td>
                 <td class="num amount">${U.money(i.amount)}</td>
-                <td class="num">${i.invoice_count ? `<span class="badge b-green">${i.invoice_count}</span>` : '<span class="badge b-red">缺</span>'}</td>
+                <td class="num">${
+                  (i.invoices || []).length
+                    ? i.invoices
+                        .map(
+                          (v) =>
+                            `<span class="chip mono" data-iv="${v.id}" style="font-size:10.5px;cursor:pointer" title="发票 ${U.esc(v.invoice_no)} · ${U.money(v.amount)}，点击查看">${U.esc(v.invoice_no)}</span>`
+                        )
+                        .join(' ')
+                    : '<span class="badge b-red">缺</span>'
+                }</td>
               </tr>`
                 )
                 .join('') || '<tr><td colspan="6"><div class="empty">无明细</div></td></tr>'}
@@ -353,21 +362,33 @@ WB.views = WB.views || {};
 
         ${
           d.invoices.length
-            ? `<div class="form-section" style="margin-top:16px">关联发票（${d.invoices.length} 张）</div>
+            ? `<div class="form-section" style="margin-top:16px;display:flex;align-items:center">关联发票（${d.invoices.length} 张）
+        ${
+          WB.can('invoice.write') && d.invoices.some((v) => !v.item_id)
+            ? `<span class="spacer"></span><button class="btn btn-xs" id="iv-match" title="按金额把发票挂到对应的费用明细行">按金额匹配明细</button>`
+            : ''
+        }
+        </div>
         <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px;overflow:hidden">
           <table class="tbl">
-            <thead><tr><th>发票号码</th><th>类型</th><th>开票日期</th><th>销售方</th><th class="num">金额</th><th>查验</th></tr></thead>
+            <thead><tr><th>发票号码</th><th>类型</th><th>开票日期</th><th>销售方</th><th class="num">金额</th><th>关联明细</th><th>查验</th></tr></thead>
             <tbody>${d.invoices
-              .map(
-                (v) => `<tr>
+              .map((v) => {
+                const it = v.item_id ? d.items.find((i) => i.id === v.item_id) : null;
+                return `<tr data-iv="${v.id}" style="cursor:pointer" title="点击查看发票">
               <td class="mono">${U.esc(v.invoice_no)}</td>
               <td class="muted">${U.esc(v.invoice_type)}</td>
               <td class="nowrap">${U.date(v.invoice_date)}</td>
               <td class="ellipsis muted">${U.esc(v.seller_name || '—')}</td>
               <td class="num amount">${U.money(v.amount)}</td>
+              <td>${
+                it
+                  ? `<span class="muted">${U.esc(it.category_name || '明细')} · ${U.money(it.amount)}</span>`
+                  : '<span class="badge b-orange">未指定明细</span>'
+              }</td>
               <td>${U.badge(v.check_status)}</td>
-            </tr>`
-              )
+            </tr>`;
+              })
               .join('')}</tbody>
           </table>
         </div>`
@@ -399,6 +420,34 @@ WB.views = WB.views || {};
         <button class="btn" data-close>关闭</button>`,
       onMount(apiMod) {
         bindAiInsight(apiMod.el, d);
+
+        // 点关联发票行 / 明细里的发票号：有影像先看影像，没影像且有权就打开票面编辑
+        const openInvoiceRow = (id) => {
+          const v = d.invoices.find((x) => String(x.id) === String(id));
+          if (!v) return;
+          if (v.attachment_count > 0) return WB.viewInvoiceAttachments(v);
+          if (WB.can('invoice.write')) return WB.openInvoice(v.id);
+          U.toast('该发票还没有影像，请联系财务补传', 'warn');
+        };
+        U.qsa('tr[data-iv], span[data-iv]', apiMod.el).forEach((el) => {
+          el.onclick = () => openInvoiceRow(el.dataset.iv);
+        });
+        const matchBtn = U.qs('#iv-match', apiMod.el);
+        if (matchBtn)
+          matchBtn.onclick = async () => {
+            matchBtn.disabled = true;
+            try {
+              const r = await api.matchItems(d.id);
+              U.toast(
+                r.matched ? `已把 ${r.matched} 张发票挂到对应明细行` : '没有能唯一匹配金额的发票，请人工指定',
+                r.matched ? 'success' : 'warn'
+              );
+              apiMod.close();
+              return openDetail(d.id, meta, reload);
+            } catch (e) {
+              matchBtn.disabled = false;
+            }
+          };
 
         U.qsa('[data-act]', apiMod.el).forEach((b) => {
           b.onclick = async () => {

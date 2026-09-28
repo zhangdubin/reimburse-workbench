@@ -115,6 +115,9 @@ WB.views = WB.views || {};
       footer: `<button class="btn" data-close>取消</button><button class="btn btn-primary" data-save>保存</button>`,
       onMount(m) {
         const g = (id) => U.qs(id, m.el);
+        // 识别时选过的文件要留到保存后传成影像：用户已经把发票拍/传上来了，
+        // 不能让它识别完就丢掉、还得去「影像」里再传一遍。
+        let pickedFile = null;
         // 上传发票 -> 服务端识别 -> 自动填表。财务手工登记发票时不用再逐个字段手敲，
         // 识别不准的地方仍然可以改（这是「手工录入信息不全」的正解：先把能识别的填上）。
         const fileEl = g('#v-file');
@@ -122,6 +125,7 @@ WB.views = WB.views || {};
           fileEl.onchange = async (e) => {
             const f = e.target.files && e.target.files[0];
             if (!f) return;
+            pickedFile = f;
             const hint = g('#v-recog-hint');
             hint.textContent = `正在识别 ${f.name}…`;
             try {
@@ -176,9 +180,22 @@ WB.views = WB.views || {};
           if (!payload.invoice_no) return U.toast('请填写发票号码', 'warn');
           if (!payload.amount) return U.toast('请填写价税合计金额', 'warn');
           try {
-            if (isNew) await api.createInvoice(payload);
-            else await api.updateInvoice(d.id, payload);
-            U.toast('已保存', 'success');
+            if (isNew) {
+              const inv = await api.createInvoice(payload);
+              if (pickedFile && inv && inv.id) {
+                try {
+                  await api.uploadAttachment(inv.id, pickedFile);
+                  U.toast('已保存，识别用的文件已保留为发票影像', 'success');
+                } catch (e2) {
+                  U.toast('发票已保存，但影像上传失败，请在「影像」里补传', 'warn', 5000);
+                }
+              } else {
+                U.toast('已保存', 'success');
+              }
+            } else {
+              await api.updateInvoice(d.id, payload);
+              U.toast('已保存', 'success');
+            }
             m.close();
             onDone();
           } catch (e) {}
@@ -939,4 +956,6 @@ WB.views = WB.views || {};
 
   /* v2.8.0：供「扫码核验」等外部入口直接打开发票详情（复用发票编辑表单） */
   WB.openInvoice = async (id) => openForm(await api.invoice(id), WB.meta);
+  /* 供报销单详情等外部入口直接打开发票影像（只查看，不进编辑表单） */
+  WB.viewInvoiceAttachments = (inv, onChanged) => openAttachments(inv, onChanged);
 })();
