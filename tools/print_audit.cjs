@@ -73,9 +73,10 @@ function findChrome() {
     check('报销单打印窗口弹出', /BX/.test(t), `标题=${t}`);
     // 抓正文断言关键区块
     const bodyTxt = await detailPop.evaluate(() => document.body.innerText);
-    check('打印页含「费用报销单」抬头', bodyTxt.includes('费用报销单'));
-    check('打印页含合计大写', /大写：/.test(bodyTxt));
-    check('打印页含签字栏', bodyTxt.includes('财务审核') && bodyTxt.includes('审批人'));
+    check('打印页含「费用报销单」抬头', /费\s*用\s*报\s*销\s*单/.test(bodyTxt));
+    check('打印页含合计大写', /人民币大写/.test(bodyTxt));
+    check('打印页含签字栏', bodyTxt.includes('财务审核') && /审批人|最\s*终\s*审\s*批/.test(bodyTxt));
+    check('打印页含 DM 核验码页脚', bodyTxt.includes('扫码核验单据'));
     await detailPop.close();
   } else check('报销单打印窗口弹出', false, '没有捕获到新窗口');
 
@@ -98,7 +99,7 @@ function findChrome() {
     await invPop.emulateMedia({ media: 'print' });
     await invPop.screenshot({ path: path.join(OUT, 'print-invoices.png'), fullPage: true });
     const bodyTxt = await invPop.evaluate(() => document.body.innerText);
-    check('发票清单打印窗口弹出', bodyTxt.includes('发票清单'));
+    check('发票清单打印窗口弹出', /发\s*票\s*清\s*单/.test(bodyTxt));
     check('清单含勾选说明', bodyTxt.includes('勾选 2 张'));
     await invPop.close();
   } else check('发票清单打印窗口弹出', false, '没有捕获到新窗口');

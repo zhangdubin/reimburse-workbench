@@ -1,6 +1,8 @@
 /* =====================================================================
- * 打印模块（v2.7.13）—— 正式财务凭证版式 + Data Matrix
+ * 打印模块（v2.9.20）—— 正式财务凭证版式 + Data Matrix
  *   后端 /api/print/dm（pylibdmtx，ISO/IEC 16022 标准实现）
+ *   v2.9.20：DM 码从 position:fixed 贴纸角（每页重复、压正文）改为文档流页脚行
+ *            （码图 + 扫码核验说明，只在末页出现）；表格行/区块禁止跨页截断。
  *   v2.7.13：左下角只留 DM 码图，去掉「扫码核验」标签 / 编号姓名 / 系统名（含配套 CSS 清理）。
  *   v2.7.12：DM payload 精简为单号（≤26×26 单数据区，不再出现 40×40 四区拼块）；
  *            打印尺寸 22mm → 16mm。
@@ -316,14 +318,20 @@ ${bars.replace(/^/gm, '  ')}
   }
 
   /**
-   * 左下角 Data Matrix 核验码
-   * v2.7.13：只留码图本身 —— 去掉「扫码核验/SCAN TO VERIFY」标签、
-   *          编号·姓名文字、底部系统名，版面更干净。
+   * 页脚 Data Matrix 核验码
+   * v2.9.20：从「position:fixed 贴纸面左下角（每页重复、压正文）」改为
+   *          文档流页脚行——码图 + 「扫码核验 · 单据编号」，只出现在最后一页末尾。
    * @param {string} payload - 编码内容（报销单号 / 发票号 / 清单批次号）
    */
   function barcodeCorner(payload) {
     if (!payload) return '';
-    return `<div class="bc-corner"><div class="bc-qr"><img class="bc-qr-img" src="${dmUrl(payload)}" alt="Data Matrix"/></div></div>`;
+    return `<div class="bc-corner">
+      <div class="bc-qr"><img class="bc-qr-img" src="${dmUrl(payload)}" alt="Data Matrix"/></div>
+      <div class="bc-cap">
+        <div class="l1">扫码核验单据</div>
+        <div class="l2">${esc(payload)}</div>
+      </div>
+    </div>`;
   }
 
   /* ---------- 人民币大写 ---------- */
@@ -499,17 +507,18 @@ ${bars.replace(/^/gm, '  ')}
     }
     .sign-box .line .ymd span { display: inline-block; border-bottom: 1px solid #999; min-width: 22px; text-align: center; }
 
-    /* ---- 左下角 Data Matrix 核验码（v2.7.13：只留码图，无文字）----
-     *   @page margin: 0，body 撑满整张 A4
-     *   left:0/bottom:0 贴纸面绝对左下角；保留 padding 让码不贴纸边（防裁切/扫不到） */
+    /* ---- 页脚 Data Matrix 核验码（v2.9.20：随文档流排在最后一页末尾）----
+     *   旧版 position:fixed 贴纸角，打印时每一页都会压在正文上；
+     *   改为紧跟签字栏的页脚行：码图 + 一行小字说明，只在末页出现一次、永不压正文 */
     .bc-corner {
-      position: fixed; left: 0; bottom: 0;
-      padding: 10mm 0 10mm 10mm;
-      display: none;        /* 屏幕预览时隐藏，打印时才显示 */
-      z-index: 999;
+      width: 190mm; margin: 0 auto; padding: 5mm 14mm 8mm;
+      display: flex; align-items: flex-end; gap: 12px;
     }
-    .bc-corner .bc-qr { display: block; line-height: 0; }
-    .bc-corner .bc-qr-img { display: block; width: 16mm; height: 16mm; }
+    .bc-corner .bc-qr { display: block; line-height: 0; flex: 0 0 auto; }
+    .bc-corner .bc-qr-img { display: block; width: 14mm; height: 14mm; }
+    .bc-corner .bc-cap { padding-bottom: 0.5mm; }
+    .bc-corner .bc-cap .l1 { font-size: 10.5px; font-weight: 600; color: #1a3c6e; letter-spacing: 1px; }
+    .bc-corner .bc-cap .l2 { font-size: 10.5px; color: #888; font-family: "SF Mono",Menlo,monospace; letter-spacing: .5px; }
 
     /* ---- 打印工具条 ---- */
     .toolbar { text-align: center; padding: 6px; border-bottom: 1px solid #e0e0e0; background: #f8f8f8; }
@@ -522,7 +531,9 @@ ${bars.replace(/^/gm, '  ')}
       .co-head { display: none !important; }   /* 打印时不显示公司抬头 */
       /* .page 在打印时保持原本的 padding（12/14/10mm）作为内容视觉边距
          不覆盖成 0，让正文不要贴到纸边 */
-      .bc-corner { display: block; }   /* 打印时显示在纸面最左下 */
+      /* 表格行/区块不跨页截断（发票表一行被劈成两半很难看） */
+      table.tbl tr { break-inside: avoid; page-break-inside: avoid; }
+      .tbl-wrap, .sign-wrap, .total-bar, .info-block { break-inside: avoid; page-break-inside: avoid; }
     }
   `;
 
