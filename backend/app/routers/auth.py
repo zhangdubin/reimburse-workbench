@@ -57,6 +57,8 @@ def user_out(u: m.AppUser) -> dict:
         "department_name": u.employee.department.name if u.employee and u.employee.department else None,
         "approval_level": u.approval_level,
         "active": u.active,
+        # v2.9.23：SSO 账号前端要知道来源（菜单是否显示「门户登出」、是否隐藏改密码入口）
+        "auth_source": u.auth_source or m.AUTH_LOCAL,
         "must_change_password": u.must_change_password,
         "last_login_at": u.last_login_at.isoformat(sep=" ", timespec="seconds") if u.last_login_at else None,
     }
@@ -65,6 +67,20 @@ def user_out(u: m.AppUser) -> dict:
 @router.post("/login", response_model=dict)
 def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)):
     user = db.query(m.AppUser).filter(m.AppUser.username == payload.username.strip()).first()
+
+    # v2.9.23：门户托管的账号能不能走账密登录由身份源说了算。
+    # 必须放在密码校验**之前**——SSO 账号本来就没有本地密码，
+    # 走完校验只会得到一句「用户名或密码错误」，用户完全不知道该去哪儿登录。
+    if user and user.auth_source == m.AUTH_SSO:
+        allow = True
+        if user.sso_provider_id:
+            p = db.get(m.SsoProvider, user.sso_provider_id)
+            allow = bool(p.allow_local_login) if p else False
+        if not allow:
+            _audit(db, action="登录失败", user=user, request=request, status_code=403,
+                   detail="SSO 账号被拒绝走账密登录")
+            raise HTTPException(403, "该账号已启用统一门户登录，请使用门户入口登录")
+
     # 用户不存在与密码错误返回同一句话，避免被用来枚举账号
     if not user or not sec.verify_password(payload.password, user.password_hash):
         _audit(db, action="登录失败", user=user, request=request, status_code=401,
@@ -110,6 +126,9 @@ def change_password(
     user: Annotated[m.AppUser, Depends(sec.current_user)],
     db: Session = Depends(get_db),
 ):
+    # SSO 账号本来就没有本地密码，别让「改密码」成为一条伪可用的入口
+    if user.auth_source == m.AUTH_SSO:
+        raise HTTPException(400, "该账号由统一门户管理，请到门户修改密码")
     if not sec.verify_password(payload.old_password, user.password_hash):
         _audit(db, action="改密码失败", user=user, request=request, status_code=400, detail="原密码错误")
         raise HTTPException(400, "原密码不正确")

@@ -85,7 +85,13 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
-def create_session(db: Session, user: m.AppUser, request: Request) -> str:
+def create_session(db: Session, user: m.AppUser, request: Request,
+                   hours: int | None = None, sso_provider_id: int | None = None) -> str:
+    """建立会话并返回明文 token（只此一次可见，库里存的是它的 SHA-256）。
+
+    hours： SSO 来源可以单独指定会话时长（门户的会话往往比本地 12h 更长/更短）；
+    sso_provider_id： 记录来源身份源，便于单点登出时知道该去哪个门户登出。
+    """
     token = secrets.token_urlsafe(32)
     db.add(
         m.UserSession(
@@ -93,7 +99,8 @@ def create_session(db: Session, user: m.AppUser, request: Request) -> str:
             user_id=user.id,
             ip=_client_ip(request),
             user_agent=(request.headers.get("user-agent") or "")[:255] or None,
-            expires_at=datetime.now() + timedelta(hours=TOKEN_TTL_HOURS),
+            expires_at=datetime.now() + timedelta(hours=hours or TOKEN_TTL_HOURS),
+            sso_provider_id=sso_provider_id,
         )
     )
     user.last_login_at = datetime.now()

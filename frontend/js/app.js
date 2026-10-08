@@ -17,6 +17,7 @@ WB.views = WB.views || {};
     settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
     shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
     spark: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z"/>',
+    key: '<circle cx="8" cy="12" r="4.2"/><path d="M12.2 14.8L21 21M18.2 15.4l1.2 1.2 1.6-1.6M15.6 18.2h4.2M15.6 20.6h3"/>',
     update: '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>',
     scan: '<path d="M3 8V5.5A2.5 2.5 0 0 1 5.5 3H8M16 3h2.5A2.5 2.5 0 0 1 21 5.5V8M21 16v2.5a2.5 2.5 0 0 1-2.5 2.5H16M8 21H5.5A2.5 2.5 0 0 1 3 18.5V16"/><path d="M3.5 12h17"/>',
     backup: '<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
@@ -36,6 +37,7 @@ WB.views = WB.views || {};
     { key: 'users', name: '用户管理', short: '用户', icon: 'users', group: '系统管理', perm: 'admin.users' },
     { key: 'settings', name: '系统参数', short: '参数', icon: 'settings', group: '系统管理', perm: 'settings.view' },
     { key: 'ai_settings', name: 'AI 设置', short: 'AI', icon: 'spark', group: '系统管理', perm: 'admin.ai' },
+    { key: 'sso', name: '单点登录', short: 'SSO', icon: 'key', group: '系统管理', perm: 'admin.settings.write' },
     { key: 'audit', name: '操作审计', short: '审计', icon: 'shield', group: '系统管理', perm: 'admin.audit' },
     /* hidden：可路由（#/upgrade）但不进侧边栏 / 手机标签栏——入口在右上角用户菜单 */
     { key: 'upgrade', name: '系统更新', short: '更新', icon: 'update', group: '系统管理', perm: 'admin.settings.write', hidden: true },
@@ -145,7 +147,7 @@ WB.views = WB.views || {};
         <div class="um-role"><span class="role-tag ${WB.auth.roleTone()}">${U.esc(WB.auth.roleLabel())}</span></div>
         <div class="um-meta">${meta.join(' · ')}</div>
       </div>
-      <div class="um-item" data-act="pwd">修改密码</div>
+      <div class="um-item" data-act="pwd">${u.auth_source === 'sso' ? '密码在门户修改' : '修改密码'}</div>
       ${WB.auth.can('admin.settings.write') ? '<div class="um-item" data-act="upgrade">系统更新</div>' : ''}
       ${WB.auth.can('admin.settings.write') ? '<div class="um-item" data-act="backup">数据备份</div>' : ''}
       <div class="um-item um-danger" data-act="logout">退出登录</div>`;
@@ -163,10 +165,16 @@ WB.views = WB.views || {};
     };
     setTimeout(() => document.addEventListener('click', close, true), 0);
 
-    el.querySelector('[data-act="pwd"]').onclick = () => {
-      el.remove();
-      WB.auth.promptForceChange();
-    };
+    const pwdItem = el.querySelector('[data-act="pwd"]');
+    if (pwdItem) {
+      pwdItem.onclick = () => {
+        el.remove();
+        if ((WB.auth.user || {}).auth_source === 'sso') {
+          return U.toast('该账号由统一门户管理，请到门户修改密码', 'info');
+        }
+        WB.auth.promptForceChange();
+      };
+    }
     const upgItem = el.querySelector('[data-act="upgrade"]');
     if (upgItem) {
       upgItem.onclick = () => {
@@ -185,6 +193,12 @@ WB.views = WB.views || {};
       el.remove();
       const ok = await U.confirm('确定要退出登录吗？', { okText: '退出' });
       if (!ok) return;
+      // SSO 账号走门户单点登出：连带把门户的会话也注销掉
+      if ((WB.auth.user || {}).auth_source === 'sso') {
+        sessionStorage.removeItem('wb.ai.history');
+        await WB.auth.ssoLogout();   // 内部会跳门户，没配登出地址则回普通登出
+        return;
+      }
       await WB.auth.logout();
       // 登出时把「视图代次」推一格：可能还有一次 renderView 卡在 await 里没回来，
       // 它回来后会走到收尾的 refreshNavBadges()，此时 token 已清 → 白发一串 401。

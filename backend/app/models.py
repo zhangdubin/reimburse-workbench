@@ -75,6 +75,25 @@ LEVEL_NONE = 0
 LEVEL_ONE = 1
 LEVEL_TWO = 2
 
+# ---- 认证来源（v2.9.23 单点登录）----
+AUTH_LOCAL = "local"   # 本地账密
+AUTH_SSO = "sso"       # 统一门户下发
+# SSO 账号没有本地密码，库里放这个标记；security.verify_password 对它一定返回 False
+SSO_NO_PASSWORD = "sso$no-local-password"
+
+# ---- 单点登录协议 ----
+PROTO_OAUTH2 = "oauth2"   # OAuth2 授权码 + userinfo 接口
+PROTO_OIDC = "oidc"       # OpenID Connect（授权码 + id_token 校验）
+PROTO_CAS = "cas3"        # CAS 3.0 serviceValidate（XML）
+PROTO_JWT = "jwt"         # 门户签发 JWT 直通（URL 参数 / Header）
+SSO_PROTOCOLS = [PROTO_OAUTH2, PROTO_OIDC, PROTO_CAS, PROTO_JWT]
+SSO_PROTOCOL_LABELS = {
+    PROTO_OAUTH2: "OAuth2 授权码",
+    PROTO_OIDC: "OIDC（OpenID Connect）",
+    PROTO_CAS: "CAS 3.0",
+    PROTO_JWT: "JWT 令牌直通",
+}
+
 
 class Department(Base):
     """部门（v2.9.17 起支持父子层级、成本中心、启用状态）"""
@@ -381,6 +400,9 @@ class AppUser(Base):
     """后台账号。表名刻意用 app_user：user 在 PostgreSQL 里是保留字。"""
 
     __tablename__ = "app_user"
+    # v2.9.23：同一账号既可能是本地密码账号，也可能来自统一门户，
+    # 所以 CBS 之外留了 sso 三件套：来源、归属的身份源、门户侧唯一标识。
+    __table_args__ = (UniqueConstraint("sso_provider_id", "sso_subject", name="uq_user_sso_bind"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))  # pbkdf2_sha256$iter$salt$hash
@@ -393,6 +415,10 @@ class AppUser(Base):
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # 认证来源：local=本地密码，sso=统一门户
+    auth_source: Mapped[str] = mapped_column(String(16), default=AUTH_LOCAL, index=True)
+    sso_provider_id: Mapped[int | None] = mapped_column(ForeignKey("sso_provider.id"), default=None)
+    sso_subject: Mapped[str | None] = mapped_column(String(128), default=None)  # 门户侧唯一 id（sub / uid）
 
     employee: Mapped["Employee | None"] = relationship()
 
@@ -413,8 +439,97 @@ class UserSession(Base):
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # v2.9.23：SSO 会话记录来源，用于门户侧单点登出
+    sso_provider_id: Mapped[int | None] = mapped_column(ForeignKey("sso_provider.id"), default=None)
 
     user: Mapped["AppUser"] = relationship()
+
+
+class SsoProvider(Base):
+    """单点登录身份源（v2.9.23）。
+
+    一个"来源"一条记录：协议、端点、凭据、字段映射、落地策略全在这里，
+    管理员在「单点登录」页维护，不需要改配置文件也不需要重启服务。
+
+    协议对其不理解字段保持空值即可，路由层按 protocol 分支取用，不做"通用 URL"。
+
+    client_secret / jwt_secret 走 crypt.py 加密后落库（与 mail_account 同一套做法）：
+    库被读走不等于门户凭据泄露。
+    """
+
+    __tablename__ = "sso_provider"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)   # 展示名，如「集团统一门户」
+    protocol: Mapped[str] = mapped_column(String(16), default=PROTO_OIDC)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    # ---- 端点（OAuth2 / OIDC / CAS / JWT 各不相同）----
+    issuer: Mapped[str | None] = mapped_column(String(255), default=None)          # OIDC issuer，校验 iss
+    authorize_url: Mapped[str | None] = mapped_column(Text, default=None)          # OAuth2/OIDC authorize，CAS /login
+    token_url: Mapped[str | None] = mapped_column(Text, default=None)              # OAuth2/OIDC token
+    userinfo_url: Mapped[str | None] = mapped_column(Text, default=None)           # OAuth2/OIDC userinfo
+    validate_url: Mapped[str | None] = mapped_column(Text, default=None)           # CAS serviceValidate
+    jwks_url: Mapped[str | None] = mapped_column(Text, default=None)               # OIDC/JWT 公钥集（RS256）
+    logout_url: Mapped[str | None] = mapped_column(Text, default=None)             # 门户登出地址（可选，用于单点登出）
+    client_id: Mapped[str | None] = mapped_column(String(255), default=None)
+    client_secret_enc: Mapped[str | None] = mapped_column(Text, default=None)
+    scope: Mapped[str | None] = mapped_column(String(255), default="openid profile email")
+    use_pkce: Mapped[bool] = mapped_column(Boolean, default=False)   # 门户支持的话建议开，防授权码劫持
+
+    # ---- JWT 直通专用 ----
+    jwt_source: Mapped[str | None] = mapped_column(String(16), default="query")    # query / header
+    jwt_param: Mapped[str | None] = mapped_column(String(64), default="token")     # 参数名 / Header 名
+    jwt_secret_enc: Mapped[str | None] = mapped_column(Text, default=None)         # HS256 验签密钥（共用密钥场景）
+    jwt_audience: Mapped[str | None] = mapped_column(String(255), default=None)    # 校验 aud，空=不校验
+
+    # ---- 字段映射：门户返回的字段名各家都不一样，这里给管理员自己配 ----
+    claim_subject: Mapped[str] = mapped_column(String(64), default="sub")            # 唯一标识，必填
+    claim_username: Mapped[str] = mapped_column(String(64), default="preferred_username")
+    claim_name: Mapped[str] = mapped_column(String(64), default="name")
+    claim_employee_no: Mapped[str | None] = mapped_column(String(64), default="employee_no")
+    claim_department: Mapped[str | None] = mapped_column(String(64), default="department")
+    claim_email: Mapped[str | None] = mapped_column(String(64), default="email")
+    claim_phone: Mapped[str | None] = mapped_column(String(64), default="phone_number")
+    claim_groups: Mapped[str | None] = mapped_column(String(64), default="groups")   # 角色映射的输入
+
+    # ---- 落地策略 ----
+    auto_create: Mapped[bool] = mapped_column(Boolean, default=True)      # 首次登录自动开户
+    default_role: Mapped[str] = mapped_column(String(16), default=ROLE_APPLICANT)
+    role_map: Mapped[str | None] = mapped_column(Text, default="{}")      # {"门户组名": "本系统角色"}
+    sync_profile: Mapped[bool] = mapped_column(Boolean, default=True)     # 每次登录覆盖姓名/员工号绑定
+    allow_local_login: Mapped[bool] = mapped_column(Boolean, default=True)  # 关掉=SSO 账号禁止走账密登录
+    bind_local_by_username: Mapped[bool] = mapped_column(Boolean, default=False)  # 同名本地账号自动归户（管理员账号永不自动归户）
+    session_hours: Mapped[int] = mapped_column(Integer, default=12)       # SSO 会话时长，0=跟随全局
+
+    verify_ssl: Mapped[bool] = mapped_column(Boolean, default=True)       # 自签名门户证书可临时关
+    timeout_sec: Mapped[int] = mapped_column(Integer, default=8)
+    remark: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SsoLoginState(Base):
+    """SSO 登录过程态（v2.9.23）。
+
+    两段流程共用一张表，避免把用户资料塞进 URL 或浏览器 session：
+      stage=pending  已生成授权请求，等门户回调（state=nonce）
+      stage=ready    已完成认证，等前端用 handover cookie 来换 token
+
+    每条都是一次性的、有过期时间；取用后立即置 used，重放会被拒。
+    """
+
+    __tablename__ = "sso_login_state"
+    nonce: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_id: Mapped[int] = mapped_column(ForeignKey("sso_provider.id"), index=True)
+    stage: Mapped[str] = mapped_column(String(16), default="pending")
+    pkce_verifier: Mapped[str | None] = mapped_column(String(128), default=None)
+    profile_json: Mapped[str | None] = mapped_column(Text, default=None)   # ready 阶段缓存归一化后的资料
+    username_attempt: Mapped[str | None] = mapped_column(String(64), default=None)  # 失败审计用
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class AuditLog(Base):

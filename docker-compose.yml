@@ -48,7 +48,7 @@ services:
         # 1 = 装本地 OCR（图片型发票必需，约 300MB）；0 = 瘦身镜像，
         # 拍照件/扫描件退回人工补录，服务功能不受影响
         INSTALL_OCR: ${INSTALL_OCR:-1}
-    image: reimburse-workbench:${IMAGE_TAG:-2.9.22}
+    image: reimburse-workbench:${IMAGE_TAG:-2.9.23}
     container_name: ${APP_CONTAINER:-reimburse-app}
     environment:
       DATABASE_URL: postgresql+psycopg://${DB_USER:-workbench}:${DB_PASSWORD:-workbench123}@db:5432/${DB_NAME:-workbench}
@@ -96,6 +96,11 @@ services:
       # 单次 OCR 的页数上限与 PDF 栅格化倍率（发票基本单页，2.0 已够清晰）
       OCR_MAX_PDF_PAGES: ${OCR_MAX_PDF_PAGES:-5}
       OCR_PDF_SCALE: ${OCR_PDF_SCALE:-2.0}
+
+      # ---- 单点登录（v2.9.23+，可选）----
+      # 身份源在「系统管理 → 单点登录」里配，这里只在反向代理改写过域名的场合兜底：
+      # 门户侧拿到的回调地址由此决定，不配的话按浏览器的 X-Forwarded-* 推断。
+      SSO_PUBLIC_BASE_URL: ${SSO_PUBLIC_BASE_URL:-}
 
       # ---- 在线升级（v2.9.0+，可选）----
       # 升级源是 GitHub Release；仓库/令牌也能在界面「系统更新」里填。

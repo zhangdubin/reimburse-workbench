@@ -106,6 +106,52 @@ window.WB = window.WB || {};
       return data.user;
     },
 
+    /* ------- 单点登录（v2.9.23）-------
+     * 门户登录是「浏览器跳出去 → 跳回来」的流程，回来时本地什么都没有，
+     * 只有后端种的一枚短期 handover cookie。这里负责把它换成正式 token。
+     */
+    async ssoProviders() {
+      try {
+        const res = await fetch('/api/auth/sso/providers');
+        if (!res.ok) return [];
+        const d = await res.json().catch(() => ({}));
+        return d.items || [];
+      } catch (_) {
+        return [];   // 门户不可达不影响账密登录
+      }
+    },
+
+    async claimHandover() {
+      try {
+        const res = await fetch('/api/auth/sso/handover');
+        if (!res.ok) return { ok: false };
+        return await res.json();
+      } catch (_) {
+        return { ok: false };
+      }
+    },
+
+    /** 门户侧单点登出：拿到门户登出地址后整页跳过去 */
+    async ssoLogout() {
+      try {
+        const res = await fetch('/api/auth/sso/logout?mode=json', {
+          headers: { Authorization: 'Bearer ' + this.token },
+        });
+        if (res.ok) {
+          const d = await res.json().catch(() => ({}));
+          if (d && d.logout_url) {
+            this.clear();
+            window.location.href = d.logout_url;
+            return;
+          }
+        }
+      } catch (_) {
+        /* 门户没配登出地址 / 请求失败：退回普通登出 */
+      }
+      this.clear();
+      window.location.reload();
+    },
+
     async logout() {
       try {
         if (this.token) {
@@ -134,6 +180,12 @@ window.WB = window.WB || {};
     /** 用本地 token 换一次 /me，确认会话还有效 */
     async restore() {
       this.readStorage();
+      // 门户回调回来时浏览器里没有 token，先拿 handover cookie 换一次；
+      // 没有 cookie 时后端返回 {ok:false}，这里只多花一个空请求。
+      if (!this.token) {
+        const hv = await this.claimHandover();
+        if (hv && hv.ok) this.save(hv.token, hv.user);
+      }
       if (!this.token) return null;
       try {
         const res = await fetch('/api/auth/me', {
@@ -202,13 +254,47 @@ window.WB = window.WB || {};
             <div class="login-foot">
               <span class="spin-hint" id="lg-status">检查服务状态…</span>
             </div>
+            <div class="lg-sso" id="lg-sso" style="display:none"></div>
           </div>
         </div>`;
       document.body.appendChild(root);
 
+      // 门户回调失败时后端把原因放在 ?sso_error= 里，这里显示完立刻把 URL 擦干净，
+      // 免得用户刷新一次又看到旧报错、或者把原因复制给别人
+      const params = new URLSearchParams(location.search);
+      const ssoErr = params.get('sso_error');
+      if (ssoErr) {
+        try { history.replaceState(null, '', location.pathname + location.hash); } catch (_) {}
+      }
+
       const form = root.querySelector('#lg-form');
       const errBox = root.querySelector('#lg-error');
       const btn = root.querySelector('#lg-submit');
+      const ssoBox = root.querySelector('#lg-sso');
+
+      // 门户快捷入口：没配身份源就整块隐藏，登录页长相和以前完全一样
+      this.ssoProviders().then((items) => {
+        if (!items || !items.length) return;
+        ssoBox.innerHTML =
+          `<div class="lg-sso-divider"><span>或使用统一门户登录</span></div>` +
+          items.map((v) => `
+            <button type="button" class="lg-sso-btn" data-url="${v.login_url}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                <path d="M8.6 11.8l2.4 2.4 4.4-4.4"/></svg>
+              <span>${WB.util.esc(v.name)}</span>
+              <em>${WB.util.esc(v.protocol_label || '')}</em>
+            </button>`).join('');
+        ssoBox.style.display = '';
+        ssoBox.querySelectorAll('.lg-sso-btn').forEach((b) => {
+          b.onclick = () => { window.location.href = b.dataset.url; };
+        });
+      });
+
+      if (ssoErr) {
+        errBox.textContent = ssoErr;
+        errBox.style.display = '';
+      }
 
       form.addEventListener('submit', async (e) => {
         e.preventDefault();

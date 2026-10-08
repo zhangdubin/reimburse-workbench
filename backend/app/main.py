@@ -50,12 +50,13 @@ from .routers import (
     reimbursements,
     scan,
     stats,
+    sso,
     upgrade,
 )
 from .seed import ensure_seed
 
 APP_NAME = "销售费用报销管理工作台"
-APP_VERSION = "2.9.22"
+APP_VERSION = "2.9.23"
 
 FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", Path(__file__).resolve().parents[2] / "frontend"))
 
@@ -348,6 +349,8 @@ app.include_router(stats.router)
 app.include_router(print_qr.router)
 app.include_router(jev_config.router)
 app.include_router(scan.router)
+app.include_router(sso.router)
+app.include_router(sso.admin_router)
 app.include_router(upgrade.router)
 app.include_router(backup.router)
 

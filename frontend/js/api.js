@@ -233,6 +233,22 @@ window.WB = window.WB || {};
     backupDelConfig: (key) => api.del(`/api/admin/backup/config/${encodeURIComponent(key)}`),
     backupDownloadUrl: (name) => `/api/admin/backup/download/${encodeURIComponent(name)}`,
 
+    /* 单点登录（v2.9.23）
+     * 登录侧三个接口都不带 Authorization —— 那时还没有会话。 */
+    ssoProviders: () => request('GET', '/api/auth/sso/providers', { skipAuthRedirect: true }),
+    ssoHandover: () => request('GET', '/api/auth/sso/handover', { skipAuthRedirect: true }),
+
+    /* 身份源配置（管理员） */
+    ssoAdmin: () => api.get('/api/admin/sso/providers'),
+    ssoCreate: (b) => api.post('/api/admin/sso/providers', b),
+    ssoUpdate: (id, b) => api.put(`/api/admin/sso/providers/${id}`, b),
+    ssoDelete: (id) => api.del(`/api/admin/sso/providers/${id}`),
+    ssoToggle: (id, enabled) => api.post(`/api/admin/sso/providers/${id}/toggle`, {}, { enabled }),
+    ssoTest: (id) => api.post(`/api/admin/sso/providers/${id}/test`, {}),
+    ssoMapPreview: (id, raw) => api.post(`/api/admin/sso/providers/${id}/map-preview`, { raw }),
+    ssoDiscover: (issuer, opts) =>
+      api.post('/api/admin/sso/discover', { issuer, verify_ssl: opts && opts.verifySsl, timeout_sec: 8 }),
+
     /* 批量删除与清空（危险操作，后端还会再要一次确认词） */
     batchDelete: (res, ids) => api.post(`/api/${res}/batch-delete`, { ids }),
     batchDeleteInvoices: (ids) => api.post('/api/invoices/batch-delete', { ids }),

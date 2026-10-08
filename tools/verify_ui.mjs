@@ -75,6 +75,7 @@ const VIEW_TITLES = {
   settings: '系统参数',
   ai_settings: 'AI 设置',
   audit: '操作审计',
+  sso: '单点登录',
 };
 
 /* 各角色应看到的导航入口——与后端权限矩阵一一对应。
@@ -82,7 +83,7 @@ const VIEW_TITLES = {
    财务虽然有 settings.view 但看不到 AI 设置——别把它混进「系统参数」。
    scan（扫码核验）对所有登录用户开放，数据范围由后端按角色裁剪。 */
 const ROLE_VIEWS = {
-  管理员: ['dashboard', 'reimbursements', 'invoices', 'scan', 'inbox', 'expenses', 'alerts', 'users', 'settings', 'ai_settings', 'audit'],
+  管理员: ['dashboard', 'reimbursements', 'invoices', 'scan', 'inbox', 'expenses', 'alerts', 'users', 'settings', 'ai_settings', 'audit', 'sso'],
   财务: ['dashboard', 'reimbursements', 'invoices', 'scan', 'inbox', 'expenses', 'alerts', 'settings'],
   审批人: ['dashboard', 'reimbursements', 'invoices', 'scan', 'expenses', 'alerts'],
   申请人: ['dashboard', 'reimbursements', 'invoices', 'scan', 'expenses'],

@@ -650,6 +650,30 @@ th.num { text-align: right; }
 }
 .spin-hint { display: inline-flex; align-items: center; gap: var(--sp-2); }
 
+/* 统一门户快捷入口（v2.9.23，没配身份源时整块不渲染） */
+.lg-sso { margin-top: var(--sp-5); }
+.lg-sso-divider {
+  display: flex; align-items: center; gap: var(--sp-3);
+  color: var(--text-3); font-size: var(--fs-xs); margin-bottom: var(--sp-4);
+}
+.lg-sso-divider::before, .lg-sso-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+.lg-sso-btn {
+  width: 100%; display: flex; align-items: center; gap: var(--sp-3);
+  height: 44px; padding: 0 var(--sp-4);
+  background: var(--primary-weak); border: 1px solid #cfe0ff;
+  border-radius: var(--radius-sm); cursor: pointer;
+  font-size: var(--fs-sm); color: var(--text-1); transition: background .15s, border-color .15s;
+}
+.lg-sso-btn + .lg-sso-btn { margin-top: var(--sp-3); }
+.lg-sso-btn:hover { background: #e3eeff; border-color: var(--primary); }
+.lg-sso-btn svg { width: 18px; height: 18px; flex: 0 0 18px; color: var(--primary); }
+.lg-sso-btn span { font-weight: 600; }
+.lg-sso-btn em {
+  margin-left: auto; font-style: normal; font-size: var(--fs-xs); color: var(--text-3);
+}
+
 /* ---------------- 顶栏账号 ---------------- */
 .user-chip {
   display: inline-flex; align-items: center; gap: var(--sp-3);
@@ -1437,3 +1461,90 @@ table.kv td .hint { display: inline; margin-left: 8px; }
   border-radius: var(--radius-sm);
 }
 @keyframes skel-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* ================= 单点登录（v2.9.23）================= */
+.sso-tag {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  border-radius: 999px; font-size: var(--fs-xs); font-weight: 600;
+  background: var(--panel-2); color: var(--text-2); border: 1px solid var(--border);
+}
+.sso-tag.ok { background: #e9f7ef; color: #16794a; border-color: #bfe6cd; }
+.sso-card {
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: var(--sp-5) var(--sp-6); margin-bottom: var(--sp-4);
+  background: var(--panel); transition: border-color .15s, box-shadow .15s;
+}
+.sso-card:hover { border-color: #c7d5e8; }
+.sso-card.on { border-left: 3px solid var(--success); border-left-color: #28a06a; }
+.sso-c-head { display: flex; align-items: flex-start; gap: var(--sp-4); flex-wrap: wrap; }
+.sso-c-title { display: flex; align-items: center; gap: var(--sp-3); font-size: var(--fs-md); }
+.sso-c-title b { font-weight: 600; }
+.sso-proto { font-size: var(--fs-xs); color: var(--text-3); }
+.sso-c-actions { margin-left: auto; display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.sso-c-row {
+  display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap;
+  margin-top: var(--sp-4); font-size: var(--fs-sm);
+}
+.sso-c-k { color: var(--text-3); font-size: var(--fs-xs); }
+.sso-c-v { color: var(--text-1); font-weight: 500; }
+.sso-c-url {
+  flex: 1 1 340px; min-width: 0; padding: 5px 10px; border-radius: var(--radius-sm);
+  background: var(--panel-2); border: 1px solid var(--border);
+  font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: var(--fs-xs);
+  color: var(--text-1); overflow-x: auto; white-space: nowrap;
+}
+.sso-c-remark { margin-top: var(--sp-3); font-size: var(--fs-xs); color: var(--text-3); }
+.sso-cb {
+  display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-4);
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--panel-2); border: 1px dashed var(--border);
+  font-size: var(--fs-sm); flex-wrap: wrap;
+}
+.sso-cb span { color: var(--text-3); font-size: var(--fs-xs); white-space: nowrap; }
+.sso-cb code {
+  flex: 1 1 260px; min-width: 0; font-size: var(--fs-xs); word-break: break-all; color: var(--text-1);
+}
+.sso-form .sso-group { margin-bottom: var(--sp-5); }
+.sso-g-head {
+  display: flex; align-items: baseline; gap: var(--sp-3); margin-bottom: var(--sp-3);
+  padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+.sso-g-head span { font-size: var(--fs-sm); font-weight: 600; color: var(--text-1); }
+.sso-g-head em { font-style: normal; font-size: var(--fs-xs); color: var(--text-3); }
+.sso-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-4); }
+.sso-fcol { min-width: 0; }
+.sso-fcol.sso-col-full { grid-column: 1 / -1; }
+.sso-fcol > label {
+  display: block; font-size: var(--fs-xs); color: var(--text-2); margin-bottom: 5px;
+}
+.sso-fcol input[type=text], .sso-fcol input[type=password],
+.sso-fcol input[type=number], .sso-fcol select {
+  width: 100%; height: 34px; padding: 0 10px; font-size: var(--fs-sm);
+}
+.sso-fhint { margin-top: 4px; font-size: var(--fs-xs); color: var(--text-3); line-height: 1.5; }
+.sso-check {
+  display: flex !important; align-items: flex-start; gap: 8px; margin-bottom: 6px;
+  font-size: var(--fs-xs) !important; color: var(--text-2) !important; cursor: pointer;
+}
+.sso-check span { line-height: 1.5; }
+.sso-rolemap { margin-bottom: 6px; }
+.sso-rm-row { display: flex; gap: var(--sp-2); margin-bottom: 6px; }
+.sso-rm-row .rm-k { flex: 1 1 auto; height: 32px; }
+.sso-rm-row .rm-v { width: 130px; height: 32px; }
+.sso-tools {
+  margin-top: var(--sp-5); padding-top: var(--sp-4); border-top: 1px solid var(--border);
+}
+.sso-tools-head { font-size: var(--fs-sm); font-weight: 600; margin-bottom: var(--sp-3); }
+.sso-tools textarea {
+  width: 100%; font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+  font-size: var(--fs-xs); line-height: 1.6; padding: 8px 10px; resize: vertical;
+}
+.sso-tools-row { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); }
+.sso-test {
+  margin: 0; white-space: pre-wrap; word-break: break-word; font-size: var(--fs-xs);
+  line-height: 1.8; color: var(--text-1); font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+}
+@media (max-width: 820px) {
+  .sso-grid { grid-template-columns: 1fr; }
+  .sso-c-actions { margin-left: 0; }
+}
