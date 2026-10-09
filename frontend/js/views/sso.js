@@ -62,15 +62,15 @@ WB.views = WB.views || {};
     return U.esc(v === undefined || v === null ? '' : String(v));
   }
 
-  function inputRow(fid, p, value) {
+  function inputRow(fid, p, value, cls) {
     const f = FIELDS[fid];
     const isSecret = f.kind === 'secret';
-    return `<div class="sso-fcol" data-col="${fid}">
+    return `<div class="${esc(cls || 'sso-fcol')}" data-col="${fid}">
       <label>${esc(f.label)}</label>
       <input type="${isSecret ? 'password' : 'text'}" data-f="${fid}"
         value="${esc(value === null || value === undefined ? '' : value)}"
         placeholder="${esc(f.placeholder || '')}"${isSecret ? ' autocomplete="new-password"' : ''}>
-      ${f.help ? `<div class="sso-fhint">${esc(f.help)}</div>` : ''}
+      <div class="sso-fhint">${f.help ? esc(f.help) : ''}</div>
     </div>`;
   }
 
@@ -90,7 +90,7 @@ WB.views = WB.views || {};
               </div>`;
           } else if (g.id === 'endpoint') {
             cols = ENDPOINT_FIELDS[proto].concat(['logout_url'])
-              .map((fid) => inputRow(fid, p, p && p[fid])).join('');
+              .map((fid) => inputRow(fid, p, p && p[fid], 'sso-fcol sso-col-full')).join('');
           } else if (g.id === 'cred') {
             const list = proto === 'jwt' ? ['client_id', 'jwt_secret', 'jwt_audience']
               : proto === 'cas3' ? ['client_id']
@@ -163,7 +163,7 @@ WB.views = WB.views || {};
     const box = U.qs('#sso-rolemap', el);
     if (!box) return;
     const addBtn = document.createElement('button');
-    addBtn.className = 'btn btn-sm btn-ghost rm-add';
+    addBtn.className = 'btn btn-sm btn-primary rm-add';
     addBtn.type = 'button';
     addBtn.textContent = '+ 增加映射';
     addBtn.onclick = () => addRow('', roles[0]);
@@ -175,7 +175,7 @@ WB.views = WB.views || {};
       hold.innerHTML = `
         <input class="rm-k" placeholder="门户分组名" value="${esc(k || '')}">
         <select class="rm-v">${roles.map((r) => `<option value="${esc(r)}"${String(v) === String(r) ? ' selected' : ''}>${esc(r)}</option>`).join('')}</select>
-        <button type="button" class="btn btn-sm btn-ghost rm-del">删除</button>`;
+        <button type="button" class="btn btn-sm btn-ghost rm-del" title="删除该映射">删除</button>`;
       hold.querySelector('.rm-del').onclick = () => hold.remove();
       box.appendChild(hold);
     }
@@ -258,7 +258,7 @@ WB.views = WB.views || {};
             <div class="sm-body"><div class="sm-label">登录入口</div><div class="sm-value">${on}</div>
             <div class="sm-foot">出现在登录页的按钮数</div></div></div>
           <div class="set-metric m-orange"><span class="sm-ico">⌘</span>
-            <div class="sm-body"><div class="sm-label">协议</div><div class="sm-value" style="font-size:15px">${esc(used)}</div>
+            <div class="sm-body"><div class="sm-label">协议</div><div class="sm-value sso-protocol-val">${esc(used)}</div>
             <div class="sm-foot">同一系统可并存多协议来源</div></div></div>
         </div>`;
     }
@@ -347,8 +347,8 @@ WB.views = WB.views || {};
         width: 880,
         body: `
           ${p ? `<div class="sso-cb"><span>回调地址</span><code>${esc(p.callback_url)}</code></div>` : ''}
-          ${isNew ? `<div class="sso-cb"><span>issuer 自动发现</span>
-            <input id="sso-disc-issuer" placeholder="https://portal.corp.com" style="flex:1;min-width:220px">
+          ${isNew ? `<div class="sso-cb sso-cb-inline"><span>issuer 自动发现</span>
+            <input id="sso-disc-issuer" placeholder="https://portal.corp.com">
             <button class="btn btn-sm" id="sso-disc-btn">拉取端点</button></div>` : ''}
           ${body}
           <div class="sso-tools">
