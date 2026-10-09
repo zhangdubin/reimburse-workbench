@@ -145,11 +145,12 @@ services:
     # install.sh 会把宿主 socket 的 gid 写到 .env 的 DOCKER_GID，default 999 兜底。
     group_add:
       - "${DOCKER_GID:-999}"
-    # 显式把 db 主机名指到 172.27.0.2，绕过某些 NAS Container Station
-    # bridge 驱动不给 app 容器分配 IP 的情况（解 db DNS 失败导致
-    # 旧库标记失败反复重启）。覆盖为环境里的 DB_HOST 时也仍生效。
-    extra_hosts:
-      - "db:${DB_HOST:-172.27.0.2}"
+    # db 主机名默认交给 Docker 内嵌 DNS 解析（容器重启后 IP 会变，写死 IP 不可靠：
+    # 实测一次重启后 db 从 172.20.0.2 变成 172.20.0.3，写死旧 IP 会让 app 连到自己）。
+    # 只有在 NAS Container Station 这类 bridge 不给容器分 IP、内嵌 DNS 解不出 db 的环境，
+    # 才取消下面两行注释，并在 .env 里把 DB_HOST 设为 db 容器的实际 IP。
+    # extra_hosts:
+    #   - "db:${DB_HOST}"
     # ⚠️ 老版本 Docker 引擎的环境适配，升级引擎后可删掉这两行（详见 README「Docker 引擎兼容性」）。
     # 病因：Docker Engine < 20.10.10 的默认 seccomp 白名单里没有 clone3，而且返回的是
     # EPERM 而非 ENOSYS，导致 Debian trixie（glibc ≥ 2.34）的 pthread_create

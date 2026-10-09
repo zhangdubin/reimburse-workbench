@@ -29,3 +29,6 @@ dist/
 backups/
 data/
 uploads/
+
+# 本地临时覆盖（DNS 脏缓存应急用，勿入仓库）
+docker-compose.override.yml
