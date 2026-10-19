@@ -54,7 +54,9 @@ SOURCE_WEIGHT = {
 # 允许进入解析的文件后缀（与影像白名单保持一致，另加电子发票结构格式）
 PARSE_EXT = {".pdf", ".ofd", ".xml", ".xlsx", ".xls", ".jpg", ".jpeg", ".png", ".webp", ".txt"}
 
-MONEY = r"([0-9][0-9,]*\.?[0-9]{0,2})"
+# 金额专用宽松版：OCR 常把金额里的 0 认成 O、1 认成 I/l（如「2O0O.OO」）。
+# 取出来统一走 _clean_money 修形近字；严格版正则只用于票号/代码这类纯数字。
+MONEY_L = r"([0-9OoIl][0-9OoIl,]*[.,]?[0-9OoIl]{0,2})"
 
 # 发票号码：数电票 20 位，老式 8 位；带上下文关键词时优先。
 # 拍照件 OCR 常把 0 认成 O、1 认成 I/l，字符类里带上这些形近字，
@@ -81,14 +83,38 @@ def _digits(s: str) -> str:
 _RE_CODE_CTX = re.compile(r"(?:发票代码|票据代码|InvoiceCode)[^0-9]{0,8}(\d{10,12})", re.I)
 
 # 金额 / 税额 / 税率
+#
+# 金额分强弱两档，这是「价税合计被认成合计金额」的根因所在：
+#   强档（价税合计 / 价税总计 / 含税金额 / 小写）—— 票面最终应收总额；
+#   弱档（合计金额 / 金额合计）—— 明细行金额合计，**不含税**，必须先扣掉。
+# 老式增值税发票的版式里「合计金额」印在「价税合计」之前，谁先匹配谁赢就会
+# 拿到税前金额，所以提取时必须按优先级而不是出现顺序取舍（见 extract_by_lines）。
+_AMOUNT_PRIO = {
+    "价税合计": 3, "价税总计": 3, "含税金额": 3, "小写": 3,
+    "合计金额": 1, "金额合计": 1,
+}
+
+# 「（小写）￥1060.00」——数电票的最终总额几乎都在这里，优先级最高。
+_RE_AMOUNT_LOWER = re.compile(
+    r"[（(]?\s*小写\s*[)）]?[^0-9]{0,8}[¥￥]?\s*" + MONEY_L
+)
+# 价税合计后面可能先跟一段中文大写（「（大写）壹仟零陆拾元整」），
+# 再才是小写数字。原来只允许 10 个非数字字符，大写一长就跨不过去，
+# 于是掉到「第一个 ¥」的兜底里，正好抓成明细合计。
 _RE_AMOUNT_CTX = re.compile(
-    r"(?:价税合计|合计金额|金额合计|价税总计|小写|含税金额|TotalAmtWithTax|TotalTax-includedAmount|AmountWithTax)"
-    r"[^0-9¥￥]{0,10}[¥￥]?\s*" + MONEY,
+    r"(?:价税合计|价税总计|含税金额|TotalAmtWithTax|TotalTax-includedAmount|AmountWithTax)"
+    r"[^0-9¥￥]{0,40}[¥￥]?\s*" + MONEY_L,
     re.I,
 )
-_RE_AMOUNT_YEN = re.compile(r"[¥￥]\s*" + MONEY)
+_RE_AMOUNT_YEN = re.compile(r"[¥￥]\s*" + MONEY_L)
+# 「合 计 ￥943.40 ￥56.60」：明细合计行只有金额+税额，没有价税合计标签时
+# 两者相加就是应收总额（比抓第一个 ¥ 可靠）。
+_RE_TOTAL_ROW = re.compile(
+    r"合\s*计[^0-9¥￥%]{0,8}[¥￥]?\s*" + MONEY_L
+    + r"[^0-9¥￥%]{0,10}[¥￥]?\s*" + MONEY_L
+)
 _RE_TAX_CTX = re.compile(
-    r"(?:税额合计|合计税额|税额|TotalTax|TaxAmount)[^0-9¥￥]{0,10}[¥￥]?\s*" + MONEY, re.I
+    r"(?:税额合计|合计税额|税额|TotalTax|TaxAmount)[^0-9¥￥]{0,10}[¥￥]?\s*" + MONEY_L, re.I
 )
 _RE_RATE = re.compile(r"(?:税率|征收率|TaxRate)[^0-9]{0,6}(\d{1,2}(?:\.\d{1,2})?)\s*%?", re.I)
 _RE_RATE_LOOSE = re.compile(r"(?<!\d)(\d{1,2})\s*%(?!\d)")
@@ -206,26 +232,49 @@ LABEL_FIELDS: dict[str, str] = {
     "购方名称": "buyer_name",
     "购买方": "buyer_name",
     "购方": "buyer_name",
+    # 数电票的表头是「购买方信息 / 销售方信息」，本身不带值，只用来给
+    # 后面的「名称」「统一社会信用代码」定归属。必须排在「购买方」前面
+    # （按长度倒序匹配），否则会被当成名称字段、把「信息」二字写进销售方。
+    "购买方信息": "ctx:buyer",
+    "销售方信息": "ctx:seller",
+    "购方信息": "ctx:buyer",
+    "销方信息": "ctx:seller",
+    # 明细表里的「项目名称」不是购销方名称，显式吃掉，避免污染 buyer_name
+    "项目名称": "ignore",
+    "货物名称": "ignore",
+    "服务名称": "ignore",
+    "商品名称": "ignore",
     # 「名称」单独出现时不知道该归谁，靠上文最近的购销方判断（见 _assign_party_name）
     "名称": "party_name",
     # 税号同理：数电票里购销双方都用同一个标签名，必须靠上文归属
     "统一社会信用代码": "party_tax_no",
     "纳税人识别号": "party_tax_no",
     "纳税人识别号/统一社会信用代码": "party_tax_no",
+    # 数电票两种写法都存在，斜杠前后顺序不统一，必须都认；
+    # 否则会被拆成「统一社会信用代码」+「/」+「纳税人识别号」三条，税号归属全乱
+    "统一社会信用代码/纳税人识别号": "party_tax_no",
     "销售方纳税人识别号": "seller_tax_no",
     "购买方纳税人识别号": "buyer_tax_no",
     "销售方统一社会信用代码": "seller_tax_no",
     "购买方统一社会信用代码": "buyer_tax_no",
 }
 
-# 按长度倒序拼成正则，保证「销售方名称」不会被「销售方」抢先匹配
+# 按长度倒序拼成正则，保证「销售方名称」不会被「销售方」抢先匹配。
+# 标签内部允许夹空格：拍照件/PDF 里「销 售 方 名 称」很常见，
+# 不认这种写法，整块购销方信息就全丢了。
+def _spaced_label(word: str) -> str:
+    return r"\s*".join(re.escape(ch) for ch in word)
+
+
 _LABEL_ALT = re.compile(
     "(?<![\u4e00-\u9fa5A-Za-z0-9])("
-    + "|".join(re.escape(k) for k in sorted(LABEL_FIELDS, key=len, reverse=True))
+    + "|".join(_spaced_label(k) for k in sorted(LABEL_FIELDS, key=len, reverse=True))
     + ")"
 )
 # 值里可能带的前缀噪声，如「（小写）」「(大写)」「：」「￥」
-_VALUE_PREFIX = re.compile(r"^[\s：:，,、]*(?:[（(]\s*(?:小写|大写|含税|不含税)\s*[)）])?[\s：:￥¥]*")
+_VALUE_PREFIX = re.compile(
+    r"^[\s：:，,、）)】\]]*(?:[（(]\s*(?:小写|大写|含税|不含税)\s*[)）])?[\s：:￥¥]*"
+)
 
 # 中文大写金额（发票上「价税合计（大写）」那一栏）
 _CN_DIGIT = {
@@ -291,11 +340,12 @@ def cn_amount(raw: str) -> float | None:
 
 
 def _iter_label_pairs(line: str):
-    """把一行拆成若干 (标签, 值)。
+    """把一行拆成若干 (标签, 值, 起始位置)。
 
     真实版式经常一行挤多组，例如：
         「购买方名称：深圳市恒信商贸有限公司 统一社会信用代码：91440300MA5G5678XB」
     所以不能只按第一个冒号切——要找出所有标签的位置，相邻标签之间才是值。
+    起始位置用于判断「这个无主标签离哪个购销方更近」。
     """
     hits = list(_LABEL_ALT.finditer(line))
     for idx, mo in enumerate(hits):
@@ -304,72 +354,230 @@ def _iter_label_pairs(line: str):
         value = _VALUE_PREFIX.sub("", raw).strip()
         # 去掉值尾部残留的分隔符
         value = value.rstrip(" 　\t:：,，;；")
-        yield mo.group(1), value
+        # 标签内部可能是「销 售 方 名 称」，统一去掉空白再做字段映射
+        yield re.sub(r"\s+", "", mo.group(1)), value, mo.start()
+
+
+_PARTY_MARK = re.compile(r"购买方|销售方|购方|销方")
+
+
+def _party_before(line: str, pos: int) -> str | None:
+    """取 pos 之前最近的购销方标记（同一行里左右并排时靠它区分）。"""
+    party: str | None = None
+    for mo in _PARTY_MARK.finditer(line, 0, max(pos, 0)):
+        party = "buyer" if mo.group(0).startswith("购") else "seller"
+    return party
+
+
+def _next_plain_line(lines: list[str], idx: int) -> str:
+    """标签后面没值、值被排到下一行时（表格单元格常见），取下一行纯值。
+
+    只往下看三行，且下一行本身带标签就不取——那是另一条字段，不是值。
+    """
+    for j in range(idx + 1, min(idx + 4, len(lines))):
+        text = (lines[j] or "").strip()
+        if not text:
+            continue
+        if _LABEL_ALT.search(text):
+            return ""
+        return text if len(text) <= 80 else ""
+    return ""
+
+
+def _next_party(block_parties: list[str], cursors: dict, kind: str) -> str | None:
+    """两栏区块里，同类型的值按列顺序轮转归属（名称一行买、卖，税号一行买、卖）。"""
+    if not block_parties:
+        return None
+    party = block_parties[cursors[kind] % len(block_parties)]
+    cursors[kind] += 1
+    return party
+
+
+def _tax_codes(value: str) -> list[str]:
+    """从值里取出全部统一社会信用代码。
+
+    两栏被 OCR 粘成一行时（「…MA5G5678XB91440101MA5F1234XA」），
+    带边界的正则只能拿到第一个，这里用不带边界的方式按 18 位切。
+    """
+    text = re.sub(r"\s+", "", value or "")
+    codes = [c for c in re.findall(_USCC, text) if c]
+    if not codes:
+        codes = [c for c in re.findall(_USCC, text.translate(_DIGIT_FIX)) if c]
+    out: list[str] = []
+    for code in codes:
+        if code not in out:
+            out.append(code)
+    return out
+
+
+def _name_score(name) -> int:
+    """给名称候选打分：越像公司全称分越高，用于「先到的脏值别挡住后到的真名」。"""
+    if not name:
+        return -99
+    text = str(name).strip()
+    if not text or _BAD_NAME.fullmatch(text):
+        return -99
+    score = min(len(text), 30)
+    if _NAME_TAIL.search(text):
+        score += 40
+    if re.search(r"(公司|厂|店|中心|部|社|行|院|所|集团|室)", text[-8:]):
+        score += 15
+    return score
 
 
 def extract_by_lines(text: str) -> dict:
     """行级提取。返回 {字段: 值}，只包含确实解析出来的项。"""
     fields: dict[str, object] = {}
     deferred_amount: float | None = None
+    amount_best: float | None = None
+    amount_prio = 0
     # 记「上文最近的购销方」，用于归属无主的「名称」「统一社会信用代码」
     last_party: str | None = None
+    # 数电票的两栏区块：表头和值常常分行输出（先「购买方信息」「销售方信息」，
+    # 再「名称：买方」「名称：卖方」）。记住列顺序，同类型的值按列轮转归属。
+    block_parties: list[str] = []
+    cursors = {"name": 0, "tax": 0}
 
-    for raw_line in (text or "").splitlines():
+    lines = _squeeze_lines(text).splitlines()
+
+    def offer_amount(value: float | None, prio: int) -> None:
+        """金额按优先级取值，而不是按出现顺序——合计金额（不含税）永远让位给价税合计。"""
+        nonlocal amount_best, amount_prio
+        if value is None or prio <= amount_prio:
+            return
+        amount_best, amount_prio = value, prio
+
+    def put_name(party: str, value: str) -> None:
+        got = _clean_name(value)
+        if not got:
+            return
+        key = f"{party}_name"
+        # 先用「信息」「名称」这种脏值占了位，后面的真公司名也要能盖回来
+        if _name_score(got) > _name_score(fields.get(key)):
+            fields[key] = got
+
+    for idx, raw_line in enumerate(lines):
         line = raw_line.strip()
         if not line or len(line) > 400:
             continue
-        for label, value in _iter_label_pairs(line):
+        pairs = list(_iter_label_pairs(line))
+        if not pairs:
+            continue
+        # 同一行里出现多个「名称 / 统一社会信用代码」时（数电票左右两栏并排），
+        # 按从左到右 先购方、后销方 归属。只统计**能解析出有效值**的标签：
+        # 「统一社会信用代码/纳税人识别号」这种复合标签被拆开时，
+        # 前半截的值是「/」，不能当成一条独立的税号去占位。
+        name_slots = [i for i, p in enumerate(pairs)
+                      if LABEL_FIELDS.get(p[0]) == "party_name" and _clean_name(p[1])]
+        tax_slots = [i for i, p in enumerate(pairs)
+                     if LABEL_FIELDS.get(p[0]) == "party_tax_no" and _clean_tax_no(p[1])]
+
+        i = 0
+        while i < len(pairs):
+            label, value, start = pairs[i]
             key = LABEL_FIELDS.get(label)
-            if not key or not value:
+            if not key or key == "ignore":
+                i += 1
                 continue
-            # ---- 归属类标签：靠上文判断是购买方还是销售方 ----
+
+            # ---- 购销方区块标记：只更新归属，不产出字段 ----
+            if key.startswith("ctx:"):
+                last_party = key.split(":", 1)[1]
+                if last_party not in block_parties:
+                    block_parties.append(last_party)
+                cursors["name"] = cursors["tax"] = 0
+                # 竖向标签被拼成「销售方信息名称」时，剩余部分仍是标签，重解析一遍
+                rest = value.strip("：: ")
+                parsed = list(_iter_label_pairs(rest)) if rest else []
+                if parsed and _LABEL_ALT.match(rest):
+                    pairs[i : i + 1] = parsed
+                    continue
+                i += 1
+                continue
+
+            if not value:
+                # 值排在下一行（表格单元格常见）
+                if key in ("party_name", "buyer_name", "seller_name",
+                           "party_tax_no", "seller_tax_no", "buyer_tax_no"):
+                    value = _next_plain_line(lines, idx)
+                if not value:
+                    i += 1
+                    continue
+
+            # ---- 归属类标签：靠上下文判断是购买方还是销售方 ----
             if key == "party_name":
-                if "购" in line[: line.find(label) + 8]:
-                    last_party = "buyer"
-                elif "销" in line[: line.find(label) + 8]:
-                    last_party = "seller"
-                if last_party:
-                    fields.setdefault(f"{last_party}_name", _clean_name(value))
+                party = _party_before(line, start)
+                if len(name_slots) > 1 and i in name_slots:
+                    party = "buyer" if name_slots.index(i) == 0 else "seller"
+                    cursors["name"] = len(name_slots)
+                elif not party:
+                    party = _next_party(block_parties, cursors, "name") or last_party
+                if party:
+                    last_party = party
+                    put_name(party, value)
+                i += 1
                 continue
+
             if key == "party_tax_no":
-                if last_party:
-                    fields.setdefault(f"{last_party}_tax_no", _clean_tax_no(value))
+                codes = _tax_codes(value)
+                if len(codes) >= 2:
+                    # 两栏税号粘成一行：按列顺序分别归属，别再当成同一个
+                    targets = block_parties[:2] if len(block_parties) >= 2 else ["buyer", "seller"]
+                    for party, code in zip(targets, codes[:2]):
+                        fields.setdefault(f"{party}_tax_no", code)
+                    cursors["tax"] = len(targets)
+                    i += 1
+                    continue
+                got = codes[0] if codes else None
+                party = _party_before(line, start)
+                if len(tax_slots) > 1 and i in tax_slots:
+                    party = "buyer" if tax_slots.index(i) == 0 else "seller"
+                    cursors["tax"] = len(tax_slots)
+                elif not party:
+                    party = _next_party(block_parties, cursors, "tax") or last_party
+                if party and got:
+                    last_party = party
+                    fields.setdefault(f"{party}_tax_no", got)
+                i += 1
                 continue
 
             if key in ("buyer_name", "seller_name"):
-                last_party = key.split("_")[0]
-                got = _clean_name(value)
-                if got:
-                    fields.setdefault(key, got)
+                party = key.split("_")[0]
+                last_party = party
+                put_name(party, value)
+                i += 1
                 continue
 
             if key == "amount":
-                # 「价税合计（大写）」交给中文数词解析，且优先级低于小写金额
+                # 「价税合计（大写）」交给中文数词解析；小写数字优先级更高
                 if re.search(r"[零壹贰叁肆伍陆柒捌玖拾佰仟万亿]", value):
                     if deferred_amount is None:
                         deferred_amount = cn_amount(value)
+                    i += 1
                     continue
-                money = _clean_money(_first_number(value))
-                if money is not None and money not in fields.values():
-                    fields.setdefault("amount", money)
+                offer_amount(_clean_money(_first_number(value)), _AMOUNT_PRIO.get(label, 1))
+                i += 1
                 continue
 
             if key == "tax_amount":
                 money = _clean_money(_first_number(value))
                 if money is not None:
                     fields.setdefault("tax_amount", money)
+                i += 1
                 continue
 
             if key == "tax_rate":
                 got = _clean_rate(value)
                 if got is not None:
                     fields.setdefault("tax_rate", got)
+                i += 1
                 continue
 
             if key == "invoice_date":
                 got = _date_from_text(value)
                 if got:
                     fields.setdefault("invoice_date", got)
+                i += 1
                 continue
 
             if key == "invoice_no":
@@ -378,6 +586,7 @@ def extract_by_lines(text: str) -> dict:
                 digits = re.sub(r"\D", "", _digits(compact))
                 if 8 <= len(digits) <= 25:
                     fields.setdefault("invoice_no", digits)
+                i += 1
                 continue
 
             if key == "invoice_code":
@@ -385,23 +594,38 @@ def extract_by_lines(text: str) -> dict:
                 # 数电票没有发票代码，别把号码抄成代码
                 if 10 <= len(digits) <= 12 and digits != fields.get("invoice_no"):
                     fields.setdefault("invoice_code", digits)
+                i += 1
                 continue
 
             if key == "invoice_type":
                 got = _type_from_text(value) or _type_from_text(line)
                 if got:
                     fields.setdefault("invoice_type", got)
+                i += 1
 
-    if deferred_amount is not None and not fields.get("amount"):
-        fields["amount"] = deferred_amount
+    # 「价税合计（大写）」解析出来的数也是权威值，但优先级低于小写数字
+    if deferred_amount is not None:
+        offer_amount(deferred_amount, 3)
+    if amount_best is not None:
+        fields["amount"] = amount_best
+    # 税额不可能大于价税合计，超过说明认错了列
+    if (fields.get("amount") and fields.get("tax_amount")
+            and float(fields["tax_amount"]) > float(fields["amount"])):
+        fields.pop("tax_amount", None)
     return fields
+
+
+# 金额数字可以夹 OCR 形近字（0↔O、1↔I/l），扫出来再统一修
+_MONEY_SCAN = re.compile(r"[0-9OoIl][0-9OoIl,]*[.,]?[0-9OoIl]{0,2}")
 
 
 def _first_number(value: str) -> str | None:
     """取值里第一个像金额的数字串（跳过「大写」那种中文串）。"""
     if re.search(r"[零壹贰叁肆伍陆柒捌玖]", value):
         return None
-    found = re.search(r"\d[\d,]*\.?\d{0,2}", value)
+    # 「1 060.00」这种数字中间被拆开的空格先粘回去，否则只取到 1
+    text = re.sub(r"(?<=\d)\s+(?=\d)", "", value)
+    found = _MONEY_SCAN.search(text)
     return found.group(0) if found else None
 
 
@@ -423,25 +647,48 @@ def _date_from_text(value: str) -> str | None:
     return _clean_date(found.group(1), found.group(2), found.group(3))
 
 
-# 公司名后缀。发票上的购销方名称几乎都带这些，用来判断「这个值像不像公司名」
+# 公司名后缀。发票上的购销方名称几乎都带这些，用来判断「这个值像不像公司名」。
+# 用贪婪匹配且不锚定行尾：名称后面还跟着税号/地址时也能截到正确的位置，
+# 「XX有限公司北京分公司」这种也不会被截成前半截。
 _NAME_TAIL = re.compile(
-    r"[\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,60}?"
-    r"(?:公司|厂|店|中心|部|社|行|院|所|集团|商行|工作室|事业部|分公司|超市|酒店|宾馆|事务所)$"
+    r"[\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,60}"
+    r"(?:公司|集团|厂|店|中心|部|社|行|院|所|商行|工作室|事业部|超市|商场|酒店|宾馆|"
+    r"餐厅|饭店|酒楼|药房|药店|学校|学院|大学|医院|门诊部|银行|支行|分行|合作社|"
+    r"事务所|合伙企业|经营部|门市部|加油站|基地|农场|养殖场|站|队|馆|城)"
+    # 「XX会计师事务所（普通合伙）」这种后缀后面的括号要一起保留
+    r"(?:[（(][^（()）]{1,12}[)）])?"
 )
-_NOISE_IN_NAME = re.compile(r"(纳税人识别号|统一社会信用代码|税号|开户行|地址|电话|名称[:：])")
+_NOISE_IN_NAME = re.compile(
+    r"(纳税人识别号|统一社会信用代码|税号|开户行|开户银行|地址|电话|账号|名称[:：])"
+)
+# 这些不是公司名，只是版式里的结构词。数电票表头「购买方信息」被拆成
+# 「购买方」+「信息」时，早先会把「信息」当成公司名，把真名挡在门外。
+_BAD_NAME = re.compile(
+    r"(?:信息|名称|名称信息|信息名称|地址|电话|开户行|开户银行|账号|税号|"
+    r"纳税人识别号|统一社会信用代码|规格型号|单位|数量|单价|金额|税率|税额|"
+    r"项目名称|备注|及|无)"
+)
 
 
 def _clean_name(value: str) -> str | None:
     """从可能夹带相邻标签的值里抠出公司名。"""
     text = _NOISE_IN_NAME.split(value)[0].strip()
-    text = text.strip("：: ,，、")
+    # 拍照件/PDF 常把名称里的字拆出空格（「深 圳 市 恒 信…」），公司名不含空格。
+    # 只合并「中文↔中文」之间的空格：XML 解包出来的「t 广州市…」里那个
+    # 标签名前面的空格要留着，否则会把标签名 eat 进公司名。
+    text = _CJK_GAP.sub("", text)
+    text = text.strip("：: ,，、;；")
     if not text:
         return None
+    if _BAD_NAME.fullmatch(text):
+        return None
     found = _NAME_TAIL.search(text)
-    if found:
-        return found.group(0)
+    if found and len(found.group(0)) >= 4:
+        return found.group(0).strip()
     # 没有公司后缀时，可能是「个人」或未写全，长度合理就先用着
-    return text if 2 <= len(text) <= 60 else None
+    if 2 <= len(text) <= 60 and not re.fullmatch(r"[\d\W]+", text):
+        return text
+    return None
 
 
 def _clean_tax_no(value: str) -> str | None:
@@ -467,9 +714,17 @@ def _type_from_text(text: str) -> str | None:
 def _clean_money(raw: str | None) -> float | None:
     if not raw:
         return None
-    text = raw.replace(",", "").strip()
+    text = str(raw).replace(",", "").strip()
+    # OCR 形近字：金额里不会有字母，出现 O/I/l 一律当数字修
+    text = re.sub(r"[Oo]", "0", text)
+    text = re.sub(r"[Il|]", "1", text)
+    text = text.strip(" .")
     if not text or text in (".", "-"):
         return None
+    # 小数点被认成多个（1.060.00）时，最后一个是小数位，前面的当千分位
+    if text.count(".") > 1:
+        head, _, tail = text.rpartition(".")
+        text = head.replace(".", "") + "." + tail
     try:
         value = float(text)
     except ValueError:
@@ -497,9 +752,14 @@ def _strip_tags(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+# 中文之间被 OCR / PDF 拆出来的空格：中文词之间本来不用空格，
+# 「销 售 方 名 称」「合 计 金 额」这种拆字很常见，不合并就整条标签都匹配不到。
+_CJK_GAP = re.compile(r"(?<=[\u4e00-\u9fff])[ \t\u3000]+(?=[\u4e00-\u9fff])")
+
+
 def _squeeze(text: str) -> str:
     """把换行与连续空白压成单空格，让「跨行」的键值对能被正则抓到。"""
-    return re.sub(r"[\s\u3000]+", " ", text or "")
+    return _CJK_GAP.sub("", re.sub(r"[\s\u3000]+", " ", text or ""))
 
 
 def _squeeze_lines(text: str) -> str:
@@ -1023,22 +1283,39 @@ def extract_by_patterns(text: str) -> dict:
         # 常见误判：把号码当代码。两个数字长度相近时以号码为准
         fields["invoice_code"] = m.group(1)
 
-    # 金额：带上下文优先，其次 ¥ 符号，最后中文大写金额
-    m = _RE_AMOUNT_CTX.search(squeezed) or _RE_AMOUNT_YEN.search(squeezed)
+    # 金额：小写 > 价税合计上下文 > 中文大写 > 合计行(金额+税额) > 最大的 ¥ 金额。
+    # 顺序就是优先级：老版票里「合计金额（不含税）」排在「价税合计」前面，
+    # 旧实现按「第一个 ¥ / 第一个匹配」取值，正好把税前金额当成应收总额。
+    amount: float | None = None
+    m = _RE_AMOUNT_LOWER.search(squeezed)
     if m:
         amount = _clean_money(m.group(1))
-        if amount is not None:
-            fields["amount"] = amount
-    if not fields.get("amount"):
+    if amount is None:
+        m = _RE_AMOUNT_CTX.search(squeezed)
+        if m:
+            amount = _clean_money(m.group(1))
+    if amount is None:
         big = re.search(
-            r"(?:大写|价税合计)[^\n]{0,10}?"
+            r"(?:大写|价税合计)[^\n]{0,20}?"
             r"([零壹贰叁肆伍陆柒捌玖拾佰仟万亿两一二三四五六七八九十百千]+[元圆][^\n]{0,8})",
             squeezed,
         )
         if big:
-            got = cn_amount(big.group(1))
-            if got is not None:
-                fields["amount"] = got
+            amount = cn_amount(big.group(1))
+    if amount is None:
+        m = _RE_TOTAL_ROW.search(squeezed)
+        if m:
+            part, tax = _clean_money(m.group(1)), _clean_money(m.group(2))
+            if part is not None and tax is not None and part + tax > 0:
+                amount = round(part + tax, 2)
+    if amount is None:
+        # 最后一个兜底：发票上价税合计必然是表内最大的一笔 ¥ 金额。
+        # 取第一个会把明细金额/单价抓成总额，取最大值稳得多。
+        vals = [v for v in (_clean_money(x) for x in _RE_AMOUNT_YEN.findall(squeezed)) if v]
+        if vals:
+            amount = max(vals)
+    if amount is not None:
+        fields["amount"] = amount
 
     # 税额
     m = _RE_TAX_CTX.search(squeezed)
@@ -1047,6 +1324,13 @@ def extract_by_patterns(text: str) -> dict:
         # 税额不该大于价税合计
         if tax is not None and (not fields.get("amount") or tax <= float(fields["amount"])):
             fields["tax_amount"] = tax
+    if not fields.get("tax_amount"):
+        # 「合 计 ￥943.40 ￥56.60」：合计行第二列就是税额（数电票常见）
+        total_row = _RE_TOTAL_ROW.search(squeezed)
+        if total_row:
+            tax = _clean_money(total_row.group(2))
+            if tax is not None and (not fields.get("amount") or tax <= float(fields["amount"])):
+                fields["tax_amount"] = tax
 
     # 税率
     m = _RE_RATE.search(squeezed)
@@ -1076,13 +1360,23 @@ def extract_by_patterns(text: str) -> dict:
     m = _RE_BUYER_CTX.search(squeezed)
     if m:
         fields["buyer_name"] = m.group(1).strip()
-    if not fields.get("buyer_name"):
-        all_names = [x.group(1).strip() for x in _RE_NAME_ANY.finditer(squeezed)]
-        if all_names:
-            # 名称出现两次以上时，第一个通常是购买方
-            fields.setdefault("buyer_name", all_names[0])
-            if len(all_names) > 1 and not fields.get("seller_name"):
-                fields["seller_name"] = all_names[1]
+    if not fields.get("buyer_name") and not fields.get("seller_name"):
+        # 兜底：按「名称」前面的上下文判断归属；没有上下文时按左右顺序
+        # 先购后销。不能只看第一个——只有销售方一张票时会把卖方塞给买方。
+        found: list[tuple[str, str | None]] = []
+        for mo in _RE_NAME_ANY.finditer(squeezed):
+            name = mo.group(1).strip()
+            prefix = squeezed[max(0, mo.start() - 16) : mo.start()]
+            party = "seller" if (re.search(r"销", prefix) and not re.search(r"购", prefix)) else None
+            found.append((name, party))
+        unlabeled = [n for n, p in found if p is None]
+        for name, party in found:
+            if party:
+                fields.setdefault(f"{party}_name", name)
+        if unlabeled:
+            fields.setdefault("buyer_name", unlabeled[0])
+            if len(unlabeled) > 1:
+                fields.setdefault("seller_name", unlabeled[1])
 
     # 税号：优先按上下文定位，避免购销方对调
     m = _RE_SELLER_TAX.search(squeezed)
