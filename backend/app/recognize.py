@@ -239,12 +239,17 @@ LABEL_FIELDS: dict[str, str] = {
     "销售方信息": "ctx:seller",
     "购方信息": "ctx:buyer",
     "销方信息": "ctx:seller",
-    # 明细表里的「项目名称」不是购销方名称，显式吃掉，避免污染 buyer_name
+    # 明细表 / 备注里的这些「名称」不是购销方名称，显式吃掉，避免污染 buyer_name
     "项目名称": "ignore",
     "货物名称": "ignore",
     "服务名称": "ignore",
     "商品名称": "ignore",
-    # 「名称」单独出现时不知道该归谁，靠上文最近的购销方判断（见 _assign_party_name）
+    "产品名称": "ignore",
+    "合同名称": "ignore",
+    "工程名称": "ignore",
+    "开户名称": "ignore",
+    "账户名称": "ignore",
+    # 「名称」单独出现时不知道该归谁，靠上文最近的购销方判断（见 extract_by_lines）
     "名称": "party_name",
     # 税号同理：数电票里购销双方都用同一个标签名，必须靠上文归属
     "统一社会信用代码": "party_tax_no",
@@ -266,11 +271,27 @@ def _spaced_label(word: str) -> str:
     return r"\s*".join(re.escape(ch) for ch in word)
 
 
+# 「名称」不参与主标签表：两栏名称被粘成一行时（「…有限公司名称：广州…」），
+# 前面的左边界规则会把第二个「名称」挡掉。改为要求后面跟冒号，独立匹配，
+# 这样无论前面是汉字还是别的标签都能认出来。
+_LABEL_WORDS = [k for k in LABEL_FIELDS if k != "名称"]
 _LABEL_ALT = re.compile(
     "(?<![\u4e00-\u9fa5A-Za-z0-9])("
-    + "|".join(_spaced_label(k) for k in sorted(LABEL_FIELDS, key=len, reverse=True))
+    + "|".join(_spaced_label(k) for k in sorted(_LABEL_WORDS, key=len, reverse=True))
     + ")"
 )
+_NAME_LABEL_RE = re.compile(_spaced_label("名称") + r"\s*[：:]")
+# 裸「名称」写在行尾、值排到下一行（竖向标签、表格单元格都会这样）
+_NAME_BARE_RE = re.compile(_spaced_label("名称") + r"\s*$")
+
+
+def _has_label(text: str) -> bool:
+    return bool(_LABEL_ALT.search(text) or _NAME_LABEL_RE.search(text))
+
+
+def _starts_with_label(text: str) -> bool:
+    """判断一段文本是否以标签开头（含裸「名称」，用于竖向标签重解析）。"""
+    return bool(_LABEL_ALT.match(text) or _NAME_LABEL_RE.match(text) or _NAME_BARE_RE.match(text))
 # 值里可能带的前缀噪声，如「（小写）」「(大写)」「：」「￥」
 _VALUE_PREFIX = re.compile(
     r"^[\s：:，,、）)】\]]*(?:[（(]\s*(?:小写|大写|含税|不含税)\s*[)）])?[\s：:￥¥]*"
@@ -347,15 +368,24 @@ def _iter_label_pairs(line: str):
     所以不能只按第一个冒号切——要找出所有标签的位置，相邻标签之间才是值。
     起始位置用于判断「这个无主标签离哪个购销方更近」。
     """
-    hits = list(_LABEL_ALT.finditer(line))
-    for idx, mo in enumerate(hits):
-        end = hits[idx + 1].start() if idx + 1 < len(hits) else len(line)
+    hits = (list(_LABEL_ALT.finditer(line)) + list(_NAME_LABEL_RE.finditer(line))
+            + list(_NAME_BARE_RE.finditer(line)))
+    # 「购买方名称」这类完整标签会覆盖它内部的「名称」，按位置排序后丢掉被包含的命中
+    hits.sort(key=lambda m: (m.start(), -(m.end() - m.start())))
+    picked: list[re.Match] = []
+    for mo in hits:
+        if any(mo.start() < p.end() and mo.end() > p.start() for p in picked):
+            continue
+        picked.append(mo)
+    for idx, mo in enumerate(picked):
+        end = picked[idx + 1].start() if idx + 1 < len(picked) else len(line)
         raw = line[mo.end() : end]
         value = _VALUE_PREFIX.sub("", raw).strip()
         # 去掉值尾部残留的分隔符
         value = value.rstrip(" 　\t:：,，;；")
         # 标签内部可能是「销 售 方 名 称」，统一去掉空白再做字段映射
-        yield re.sub(r"\s+", "", mo.group(1)), value, mo.start()
+        label = re.sub(r"\s+", "", mo.group(1)) if mo.groups() else "名称"
+        yield label, value, mo.start()
 
 
 _PARTY_MARK = re.compile(r"购买方|销售方|购方|销方")
@@ -378,7 +408,7 @@ def _next_plain_line(lines: list[str], idx: int) -> str:
         text = (lines[j] or "").strip()
         if not text:
             continue
-        if _LABEL_ALT.search(text):
+        if _has_label(text):
             return ""
         return text if len(text) <= 80 else ""
     return ""
@@ -489,7 +519,7 @@ def extract_by_lines(text: str) -> dict:
                 # 竖向标签被拼成「销售方信息名称」时，剩余部分仍是标签，重解析一遍
                 rest = value.strip("：: ")
                 parsed = list(_iter_label_pairs(rest)) if rest else []
-                if parsed and _LABEL_ALT.match(rest):
+                if parsed and _starts_with_label(rest):
                     pairs[i : i + 1] = parsed
                     continue
                 i += 1
@@ -1415,6 +1445,24 @@ def _confidence(source: str, fields: dict) -> float:
 # ---------------------------------------------------------------- 入口
 
 
+_INVOICE_HINT = re.compile(r"(发票|票据|行程单|客票)")
+_AMOUNT_LINE = re.compile(r"(价税合计|小写|含税金额|价税总计)")
+_NAME_LINE = re.compile(r"名\s*称")
+
+
+def _ocr_missing_key_info(text: str) -> bool:
+    """发票件的 OCR 文本是否整行缺了金额或购销方名称。
+
+    缺行时值得用增强图再跑一次：置信度再高，漏检的那一行也读不出来。
+    只盯这两个字段——它们缺了表单就填不出来，用户必须手打；
+    税号缺行也补，但为此让每张票多花 7 秒不值（增强一遍约翻倍）。
+    """
+    got = text or ""
+    if not _INVOICE_HINT.search(got):
+        return False
+    return not _AMOUNT_LINE.search(got) or not _NAME_LINE.search(got)
+
+
 def _file_texts(data: bytes, name: str, use_ocr: bool) -> tuple[list[tuple[str, str]], dict]:
     """按文件类型选解析路径，返回 ([(来源, 文本)], OCR 层信息)。
 
@@ -1476,7 +1524,15 @@ def _file_texts(data: bytes, name: str, use_ocr: bool) -> tuple[list[tuple[str, 
     if looks_image and use_ocr:
         got = _ocr.ocr_image(data)
         if got:
-            out.append(("ocr", fix_ocr_labels(got.text)))
+            text = fix_ocr_labels(got.text)
+            # 字读出来了但关键字段整行漏检（表格小字、宽行）时，再用增强图补一遍。
+            # 容器里实测：首跑 10 行（丢了税号行），增强跑 12 行（税号回来了）。
+            if _ocr_missing_key_info(text):
+                better = _ocr.ocr_image(data, force_enhance=True)
+                if better and len(better.lines) > len(got.lines):
+                    got = better
+                    text = fix_ocr_labels(better.text)
+            out.append(("ocr", text))
             ocr_info = {
                 "backend": got.backend, "pages": got.pages,
                 "elapsed_ms": got.elapsed_ms, "avg_score": got.avg_score,

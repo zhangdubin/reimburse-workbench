@@ -319,11 +319,13 @@ def is_image_name(name: str) -> bool:
     return os.path.splitext((name or "").lower())[1] in IMAGE_EXT
 
 
-def ocr_image(data: bytes, backend: str = "") -> OcrResult | None:
+def ocr_image(data: bytes, backend: str = "", force_enhance: bool = False) -> OcrResult | None:
     """识别一张位图。任何异常都吞掉并返回 None —— OCR 失败不该让整条收票链路挂掉。
 
     首跑效果差（行数少或平均置信度低）时自动用增强图重跑一次，
     两跑里取行数更多的结果 —— 行数是信息量最直接的信号。
+    force_enhance=True 用于「文字读出来了、但关键字段缺行」的情况：
+    置信度不低也会再跑一遍增强图（例如表格里一行小字整行漏检）。
     """
     if not data:
         return None
@@ -334,7 +336,7 @@ def ocr_image(data: bytes, backend: str = "") -> OcrResult | None:
     try:
         if backend == "rapidocr":
             lines, avg = _rapid_ocr(_load_image(data))
-            poor = len(lines) < 8 or avg < 0.85
+            poor = force_enhance or len(lines) < 8 or avg < 0.85
             if poor:
                 try:
                     lines2, avg2 = _rapid_ocr(_load_image(data, enhance=True))
