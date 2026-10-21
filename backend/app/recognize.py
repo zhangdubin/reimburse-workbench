@@ -520,6 +520,90 @@ def extract_by_lines(text: str) -> dict:
         if _name_score(got) > _name_score(fields.get(key)):
             fields[key] = got
 
+    # 数电票 PDF（电子发票（普通发票））的文本层是「模板先行」版式：
+    #   发票号码：开票日期：购买方信息…销售方信息…名称：名称：…开票人：   ← 标签排一行，值全空
+    #   261120000044645253312026年10月21日                               ← 号码与日期粘连
+    #   中科世通亨奇（北京）科技有限公司                                   ← 购买方名称
+    #   91110108MA004T550N                                               ← 购买方税号
+    #   北京新钱柜娱乐有限公司                                            ← 销售方名称
+    #   91110105MACY5X9L69 ¥ 7722.77 ¥ 77.23                             ← 销售方税号+合计金额/税额
+    # 常规「空标签取下一行当值」会把首行值挂到最后一个「名称：」上，购销方
+    # 四个字段全部错位。识别到模板行后按固定槽位（购名/购税/销名/销税）
+    # 消费值行，消费掉的行直接置空，主循环就不会再错误挂值。
+    slot_seq = (("buyer", "name"), ("buyer", "tax"), ("seller", "name"), ("seller", "tax"))
+    for t_idx, t_line in enumerate(lines):
+        if not ("发票号码" in t_line and "开票日期" in t_line
+                and "购买方信息" in t_line and "销售方信息" in t_line):
+            continue
+        t_pairs = list(_iter_label_pairs(t_line))
+        need_empty = [v for lab, v, _ in t_pairs
+                      if lab in ("发票号码", "开票日期") or LABEL_FIELDS.get(lab) == "party_name"]
+        if len(need_empty) < 4 or any(need_empty):
+            continue  # 标签带了值就是普通版式，交给主循环
+        queue: list[int] = []
+        for j in range(t_idx + 1, min(t_idx + 12, len(lines))):
+            t = (lines[j] or "").strip()
+            if not t or len(t) > 120 or _has_label(t):
+                break
+            queue.append(j)
+        if len(queue) < 4:
+            continue
+        # 第一个值行：发票号码（数电票 20 位）+ 开票日期，两者常无分隔粘连
+        first = re.sub(r"\s", "", lines[queue[0]])
+        m_no = re.search(r"\d{20}", first)
+        if m_no:
+            fields.setdefault("invoice_no", m_no.group(0))
+        got_date = _date_from_text(first)
+        if got_date:
+            fields.setdefault("invoice_date", got_date)
+        lines[queue[0]] = ""
+        qi, si = 1, 0
+        while qi < len(queue) and si < len(slot_seq):
+            party, kind = slot_seq[si]
+            t = lines[queue[qi]].strip()
+            codes = _tax_codes(t)
+            got = _clean_name(t) or ""
+            good_name = bool(got) and _name_score(got) > 0
+            d = None if (codes or good_name) else _date_from_text(t)
+            if kind == "name":
+                if good_name:
+                    put_name(party, t)
+                    lines[queue[qi]] = ""
+                    si += 1
+                    qi += 1
+                elif codes:
+                    si += 1  # 名称行缺失（如个人购买方），本行留给下一个税号槽
+                elif d:
+                    fields.setdefault("invoice_date", d)
+                    lines[queue[qi]] = ""
+                    qi += 1
+                else:
+                    break
+            else:
+                if codes:
+                    fields.setdefault(f"{party}_tax_no", codes[0])
+                    lines[queue[qi]] = ""
+                    if party == "seller":
+                        # 行尾两个 ¥ 是「合计金额（不含税）/ 合计税额」。金额
+                        # 本身不在这里上报——行级优先合并会挡住段级找到的
+                        # 价税合计（7800），这里只补税额。
+                        yens = re.findall(r"[¥￥]\s*([0-9][0-9,]*\.\d{2})", t)
+                        if len(yens) > 1:
+                            ta = _clean_money(yens[1])
+                            if ta is not None:
+                                fields.setdefault("tax_amount", ta)
+                    si += 1
+                    qi += 1
+                elif good_name:
+                    si += 1  # 税号行缺失，本行留给下一个名称槽
+                elif d:
+                    fields.setdefault("invoice_date", d)
+                    lines[queue[qi]] = ""
+                    qi += 1
+                else:
+                    break
+        break
+
     for idx, raw_line in enumerate(lines):
         line = raw_line.strip()
         if not line or len(line) > 400:
@@ -793,8 +877,12 @@ def _clean_name(value: str) -> str | None:
     found = _NAME_TAIL.search(text)
     if found and len(found.group(0)) >= 4:
         return found.group(0).strip()
-    # 没有公司后缀时，可能是「个人」或未写全，长度合理就先用着
-    if 2 <= len(text) <= 60 and not re.fullmatch(r"[\d\W]+", text):
+    # 没有公司后缀时，可能是「个人」或未写全，长度合理就先用着。
+    # 但纯数字/日期粘连串（数电票 PDF 模板版式把发票号码+日期排在值行，
+    # 被空标签捞走时会得到「261120000044645253312026年10月21日」这种）绝不是。
+    if (2 <= len(text) <= 60 and not re.fullmatch(r"[\d\W]+", text)
+            and not re.search(r"\d{6}", text)
+            and not re.search(r"\d{3,}年|年\d{1,2}月|月\d{1,2}日", text)):
         return text
     return None
 
@@ -1389,9 +1477,24 @@ def extract_fields(text: str) -> dict:
     text = _squeeze_lines(text)
     if not text:
         return {}
-    fields = dict(extract_by_lines(text))
+    line_fields = extract_by_lines(text)
+    fields = dict(line_fields)
     for key, value in extract_by_patterns(text).items():
         fields.setdefault(key, value)
+    # 购销方「互斥归属」守卫，与 recognize() 的合并语义一致：同值时保留
+    # 行级（权威层）那侧、清掉兜底侧；两侧同层才清空（留空好过填错）。
+    # 个人购买方的票，兜底会把唯一的税号塞给买方——行级销售方税号要保住。
+    for left, right in (("buyer_name", "seller_name"), ("buyer_tax_no", "seller_tax_no")):
+        if fields.get(left) and fields.get(left) == fields.get(right):
+            l_line, r_line = bool(line_fields.get(left)), bool(line_fields.get(right))
+            if l_line == r_line:
+                if left == "buyer_tax_no":
+                    fields.pop(left, None)
+                fields.pop(right, None)
+            elif l_line:
+                fields.pop(right, None)
+            else:
+                fields.pop(left, None)
     return fields
 
 
@@ -1711,9 +1814,13 @@ def recognize(
     # 阶段一：所有来源的**行级**解析，精确解析跨来源优先。
     # 这样「A 来源只对了号码、B 来源只对了税号」时两者都能保住；
     # 若按来源逐个合并，先来的模糊结果会把后来的精确结果挡在门外。
+    line_keys: set[str] = set()
     for source, text in parts:
         if text:
-            _absorb(source, extract_by_lines(text))
+            got = extract_by_lines(text)
+            if got:
+                line_keys.update(got.keys())
+            _absorb(source, got)
 
     # 阶段二：所有来源的**段级**正则，只补阶段一没拿到的字段
     for source, text in parts:
@@ -1759,7 +1866,17 @@ def recognize(
     # 这种情况下销售方宁可留空（人工一眼能看出来要补），也不能显示成买方。
     for left, right in (("buyer_name", "seller_name"), ("buyer_tax_no", "seller_tax_no")):
         if merged.get(left) and merged.get(left) == merged.get(right):
-            merged.pop(right, None)
+            # 同值时保留行级（权威层）那侧、清掉兜底侧；两侧同层才清空。
+            # 个人购买方的票，兜底会把唯一的税号塞给买方——行级销售方税号要保住。
+            l_line, r_line = left in line_keys, right in line_keys
+            if l_line == r_line:
+                if left == "buyer_tax_no":
+                    merged.pop(left, None)
+                merged.pop(right, None)
+            elif l_line:
+                merged.pop(right, None)
+            else:
+                merged.pop(left, None)
     result = _empty(best_source)
     result.update(merged)
     result["confidence"] = _confidence(best_source, merged)
