@@ -644,6 +644,17 @@
     height: 42px;
     line-height: 40px;
   }
+  /* 详情弹窗里「关联明细」下拉：桌面给的 300px 定宽在 360px 小屏上直接捅出屏幕 */
+  .modal select.iv-item-sel {
+    max-width: 100%;
+    min-width: 0;
+    width: 100%;
+  }
+  /* 原生下拉高度跟着字号走只有 23px，手指点不准 */
+  .modal select.input,
+  .modal select {
+    min-height: 34px;
+  }
   /* SSO 角色映射行（门户分组名 → 角色下拉 → 删除）没有任何桌面样式，
      三个 inline 元素在小屏上直接把弹窗撑出横向滚动；这里给它正式布局：
      输入框弹性收缩，下拉定宽，删除按钮不缩。 */

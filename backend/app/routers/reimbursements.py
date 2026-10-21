@@ -378,6 +378,42 @@ def _transition(r: m.Reimbursement, action: str) -> tuple[str, str]:
     return cur, table[action][cur]
 
 
+def _missing_doc_items(db: Session, r: m.Reimbursement) -> list[str]:
+    """找出「应附单据缺件、又没有写原因」的明细（v2.9.27）。
+
+    缺单据本身**不阻断**流程——缺件在台账里只是橙点提示（见 invoices._doc_cond），
+    因为现实里确实有拿不到单据的票（路边扬招的巡游出租车就没有行程单）。
+    但费用类型既然明确要求了单据，拿不出来就得在明细备注里写明原因，
+    否则审批人和财务没法判断这笔是不是合规，等于把举证责任全推给了后面的人。
+    """
+    bad: list[str] = []
+    for idx, it in enumerate(r.items, 1):
+        cat = it.category
+        req = (cat.required_doc if cat else None) or None
+        if not req or not it.invoices:
+            continue
+        if (it.remark or "").strip():
+            continue
+        lacked = 0
+        for inv in it.invoices:
+            cnt = (
+                db.query(func.count(m.InvoiceAttachment.id))
+                .filter(
+                    m.InvoiceAttachment.invoice_id == inv.id,
+                    m.InvoiceAttachment.kind == req,
+                )
+                .scalar()
+                or 0
+            )
+            if not cnt:
+                lacked += 1
+        if lacked:
+            label = m.DOC_KIND_LABELS.get(req, req)
+            name = cat.name if cat else "—"
+            bad.append(f"第 {idx} 行「{name}」缺{label}（{lacked}/{len(it.invoices)} 张发票没有）")
+    return bad
+
+
 @router.post("/{oid}/submit", response_model=s.ReimbursementDetail)
 def submit(
     oid: int,
@@ -392,6 +428,14 @@ def submit(
         raise HTTPException(400, "报销单没有费用明细，无法提交")
     if not r.applicant_id:
         raise HTTPException(400, "请先选择申请人再提交")
+    bad = _missing_doc_items(db, r)
+    if bad:
+        raise HTTPException(
+            400,
+            "以下明细缺随票凭证且未说明原因：" + "；".join(bad)
+            + "。请补齐单据，或在明细「备注」里写明拿不到的原因（如「巡游出租车无行程单」）——"
+            "拿不到单据不等于不能报，但必须由本人说明清楚。",
+        )
     from_status, to_status = _transition(r, "submit")
     # 提交时按金额与当前阈值确定需要几级审批，并清零已通过级数
     r.required_level = ap.required_level(db, r.total_amount)

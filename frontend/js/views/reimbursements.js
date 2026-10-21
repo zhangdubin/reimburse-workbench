@@ -50,7 +50,7 @@ WB.views = WB.views || {};
   function itemEditor(container, cats, items) {
     const rows = items.length ? items : [blank()];
     function blank() {
-      return { id: null, category_id: cats[0] ? cats[0].id : null, occur_date: U.today(), amount: '', tax_amount: '', description: '' };
+      return { id: null, category_id: cats[0] ? cats[0].id : null, occur_date: U.today(), amount: '', tax_amount: '', description: '', remark: '' };
     }
 
     function draw() {
@@ -58,11 +58,12 @@ WB.views = WB.views || {};
         <div class="items-editor">
           <table>
             <thead><tr>
-              <th style="width:23%">费用类型</th>
-              <th style="width:14%">发生日期</th>
-              <th style="width:14%">金额(元)</th>
-              <th style="width:12%">税额(元)</th>
+              <th style="width:20%">费用类型</th>
+              <th style="width:13%">发生日期</th>
+              <th style="width:12%">金额(元)</th>
+              <th style="width:10%">税额(元)</th>
               <th>摘要</th>
+              <th style="width:19%">备注</th>
               <th style="width:36px"></th>
             </tr></thead>
             <tbody>
@@ -74,6 +75,7 @@ WB.views = WB.views || {};
                 <td><input type="number" step="0.01" min="0" class="it-amt num" value="${it.amount === '' || it.amount == null ? '' : it.amount}"></td>
                 <td><input type="number" step="0.01" min="0" class="it-tax" value="${it.tax_amount === '' || it.tax_amount == null ? '' : it.tax_amount}"></td>
                 <td><input type="text" class="it-desc" value="${U.esc(it.description || '')}" placeholder="费用说明"></td>
+                <td><input type="text" class="it-remark" value="${U.esc(it.remark || '')}" placeholder="缺单据时必填原因"></td>
                 <td><button type="button" class="del-row" data-del="${i}" title="删除该行">&times;</button></td>
               </tr>`
                 )
@@ -82,7 +84,7 @@ WB.views = WB.views || {};
             <tfoot><tr>
               <td colspan="2"><button type="button" class="btn btn-sm" data-add>+ 添加明细行</button></td>
               <td class="num strong" id="it-total">¥0.00</td>
-              <td colspan="3" class="muted">合计金额</td>
+              <td colspan="4" class="muted">合计金额</td>
             </tr></tfoot>
           </table>
         </div>`;
@@ -114,6 +116,7 @@ WB.views = WB.views || {};
           amount: g('.it-amt').value === '' ? 0 : Number(g('.it-amt').value),
           tax_amount: g('.it-tax').value === '' ? 0 : Number(g('.it-tax').value),
           description: g('.it-desc').value || null,
+          remark: g('.it-remark').value || null,
         };
       });
       return rows;
@@ -332,7 +335,7 @@ WB.views = WB.views || {};
         <div class="form-section">费用明细（${d.items.length} 条）</div>
         <div class="table-wrap" style="border:1px solid var(--border);border-radius:8px">
           <table class="tbl">
-            <thead><tr><th>费用类型</th><th>发生日期</th><th>摘要</th><th class="num">税额</th><th class="num">金额</th><th class="num">发票</th></tr></thead>
+            <thead><tr><th>费用类型</th><th>发生日期</th><th>摘要</th><th>备注</th><th class="num">税额</th><th class="num">金额</th><th class="num">发票</th></tr></thead>
             <tbody>
               ${d.items
                 .map(
@@ -340,6 +343,7 @@ WB.views = WB.views || {};
                 <td>${U.esc(i.category_name || '未分类')}</td>
                 <td class="nowrap">${U.date(i.occur_date)}</td>
                 <td class="muted">${U.esc(i.description || '—')}</td>
+                <td class="muted">${U.esc(i.remark || '—')}</td>
                 <td class="num muted">${U.money(i.tax_amount)}</td>
                 <td class="num amount">${U.money(i.amount)}</td>
                 <td class="num">${
