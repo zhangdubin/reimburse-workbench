@@ -590,10 +590,14 @@
   }
 
   /* ---------------- 弹窗：全屏 ---------------- */
+  /* 层级必须压过手机外壳：底部标签栏 1250、AI 悬浮球 1400/1401 都是常驻
+     fixed 节点，弹窗沿用桌面的 1000 就会被它们压住底部——表现为「新建报销单
+     看不到保存/取消」。1500 仍低于 toast、登录层（2000），顺序不变。 */
   .modal-mask {
     padding: 0;
     align-items: stretch;
     backdrop-filter: none;
+    z-index: 1500;
   }
   .modal {
     /* 视图给的是内联宽度（880px 之类），必须 !important 才压得住 */
@@ -612,9 +616,22 @@
   .modal-head h3 {
     font-size: var(--fs-md);
   }
+  /* 关闭叉：20px 的小方块手指点不准，撑到 38px 触控区 */
+  .modal-x {
+    min-width: 38px;
+    min-height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    border-radius: var(--radius);
+  }
   .modal-body {
     padding: var(--sp-4);
     flex: 1 1 auto;
+    /* body 是唯一滚动容器：给足惯性滚动，否则长表单滑起来发涩 */
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
   }
   .modal-foot {
     padding: var(--sp-3) var(--sp-4) calc(var(--sp-3) + env(safe-area-inset-bottom));
@@ -626,6 +643,26 @@
     min-width: 88px;
     height: 42px;
     line-height: 40px;
+  }
+  /* SSO 角色映射行（门户分组名 → 角色下拉 → 删除）没有任何桌面样式，
+     三个 inline 元素在小屏上直接把弹窗撑出横向滚动；这里给它正式布局：
+     输入框弹性收缩，下拉定宽，删除按钮不缩。 */
+  .sso-rm-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-2);
+  }
+  .sso-rm-row .rm-k { flex: 1 1 auto; min-width: 0; }
+  .sso-rm-row .rm-v { flex: 0 0 128px; min-width: 0; }
+  .sso-rm-row .rm-del { flex: 0 0 auto; }
+  .rm-add { margin-top: var(--sp-2); }
+  /* 详情弹窗里的迷你按钮（26px 高）在手机上点不准，抬到 34px 触控线。
+     不改宽度，横向排布的按钮组才不会被挤到换行。 */
+  .btn-xs {
+    height: 34px;
+    line-height: 32px;
+    padding: 0 var(--sp-3);
   }
 
   /* ---------------- 表单 / 详情 / 时间轴 ---------------- */
@@ -717,10 +754,19 @@
     min-height: 88px;
     padding: 10px var(--sp-4);
   }
+  /* ------------------------------------------------------------------
+     手机浏览器的原生勾选框默认只有 13px，表单里几乎点不中；统一放大到 22px。
+     只写属性选择器——不能用 `input {}` 全局规则，会把 select、文本框一起
+     拉宽（那条坑在桌面版踩过）。全文件只有这一处定义，别再新增同型规则，
+     后写的会把先写的悄悄覆盖掉。
+     ------------------------------------------------------------------ */
   input[type='checkbox'],
   input[type='radio'] {
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    margin: 0 var(--sp-2) 0 0;
+    vertical-align: middle;
   }
   .danger-input {
     height: 46px;
@@ -823,6 +869,11 @@
   }
   .ai-preset-grid {
     gap: var(--sp-3);
+  }
+  /* 预设胶囊只有 29px 高，手机上容易点空 */
+  .ai-preset {
+    min-height: 38px;
+    padding: 0 var(--sp-3);
   }
   .ai-hero {
     padding: var(--sp-4);

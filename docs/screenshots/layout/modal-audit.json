@@ -1,0 +1,173 @@
+[
+  {
+    "label": "新建报销单",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 1200,
+      "clientH": 618
+    }
+  },
+  {
+    "label": "报销单详情",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 1103,
+      "clientH": 618
+    }
+  },
+  {
+    "label": "登记发票",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 1549,
+      "clientH": 618
+    }
+  },
+  {
+    "label": "新建用户",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 618,
+      "clientH": 618
+    }
+  },
+  {
+    "label": "新增身份源",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 3059,
+      "clientH": 618
+    }
+  },
+  {
+    "label": "新增模型服务商",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 1791,
+      "clientH": 618
+    }
+  },
+  {
+    "label": "新增收票邮箱",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 1184,
+      "clientH": 618
+    }
+  },
+  {
+    "label": "新增费用类型",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 781,
+      "clientH": 618
+    }
+  },
+  {
+    "label": "新增预算",
+    "box": {
+      "w": 360,
+      "h": 740,
+      "top": 0,
+      "bottom": 740
+    },
+    "hidden": [],
+    "overflow": [],
+    "clipped": [],
+    "smallTaps": [],
+    "multiCol": [],
+    "body": {
+      "h": 618,
+      "scrollH": 618,
+      "clientH": 618
+    }
+  }
+]
