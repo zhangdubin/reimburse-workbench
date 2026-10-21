@@ -131,28 +131,45 @@ _RE_DATE_ANY_FIX = re.compile(
     r"(20[0-9OoIl]{2})\s*[-/年.]\s*([0-9OoIl]{1,2})\s*[-/月.]\s*([0-9OoIl]{1,2})"
 )
 
-# 购销方
-_RE_SELLER_CTX = re.compile(
-    r"(?:销售方|销方|销\s*方|SellerName)[^\n]{0,40}?"
-    r"(?:名称|Name)?[：:\s]{0,4}([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{4,60}?(?:公司|厂|店|中心|部|社|行|院|所|集团|商行|工作室))",
+# 购销方名称
+#
+# 这里**不能**用「销售方…40 字以内找公司名」这种贪心上下文匹配。数电票的
+# 表头是「购买方信息  销售方信息」并排一行，紧接着才是两家的名称；贪心窗口
+# 从「销售方」跨过去，第一个撞上的正是**买方**名称，于是销售方被填成买方、
+# 两边变成同一家公司。段级只认「名称：」这种明确写法，归属靠出现顺序
+# （购方在左/上、销方在后），见 _names_from_patterns。
+# 「名称：」后面取到下一个标签为止。**必须**用非贪婪 + 前瞻边界，否则
+# 第一个「名称：」会把后面几十字（含第二个「名称：」）整段吃掉，
+# 两栏票的销售方名称就再也匹配不到了。
+_NAME_STOP = r"(?=\s*(?:名\s*称|统一社会信用代码|纳税人识别号|税号|地址|电话|开户|账号|备注|$))"
+_RE_NAME_VALUE = re.compile(r"名\s*称\s*[：:]\s*([^\n]{2,80}?)" + _NAME_STOP)
+# 显式带归属的写法（「销售方名称：X」）。必须让「销售方」和「名称」紧邻，
+# 中间一旦夹了「信息」，那就是数电票的两栏表头，不是归属标记。
+_RE_BUYER_NAME_TAG = re.compile(r"(?:购买方|购方)名\s*称\s*[：:]\s*([^\n]{2,80}?)" + _NAME_STOP)
+_RE_SELLER_NAME_TAG = re.compile(r"(?:销售方|销方)名\s*称\s*[：:]\s*([^\n]{2,80}?)" + _NAME_STOP)
+# OFD / XML 解包后的形态是「标签名 值」相邻（SellerName 深圳市云图科技有限公司
+# SellerIdNum 9144…），没有中文「名称：」，不单独认这一类，结构化票的购销方全丢。
+_RE_XML_SELLER_NAME = re.compile(
+    r"SellerName\s*[：:]?\s*([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,60}?)(?=\s+[A-Z][A-Za-z]*|\s*$)"
 )
-_RE_BUYER_CTX = re.compile(
-    r"(?:购买方|购方|购\s*方|BuyerName)[^\n]{0,40}?"
-    r"(?:名称|Name)?[：:\s]{0,4}([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{4,60}?(?:公司|厂|店|中心|部|社|行|院|所|集团|商行|工作室))",
+_RE_XML_BUYER_NAME = re.compile(
+    r"BuyerName\s*[：:]?\s*([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{2,60}?)(?=\s+[A-Z][A-Za-z]*|\s*$)"
 )
-_RE_NAME_ANY = re.compile(r"(?:名\s*称|CompanyName)[：:\s]{0,4}([\u4e00-\u9fa5A-Za-z0-9（）()·\-]{4,60}?(?:公司|厂|店|中心|部|社|行|院|所|集团|商行|工作室))")
 
 # 统一社会信用代码
 _USCC = r"([0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10})"
 _RE_USCC = re.compile(r"(?<![0-9A-Z])" + _USCC + r"(?![0-9A-Z])")
 # 带上下文的税号：OFD/XML 里标签名是 SellerIdNum / BuyerIdNum，
-# 纯文本里是「销售方名称：xxx 纳税人识别号：xxx」。按上下文取才不会把两者搞反。
+# 纯文本里是「销售方名称：xxx 纳税人识别号：xxx」。窗口必须收紧到 10 字，
+# 否则同样会跨过表头把对方的税号读成自己的（两栏票税号对调的老根因）。
 _RE_SELLER_TAX = re.compile(
-    r"(?:销售方|销方|销\s*方|Seller)[^\n]{0,80}?(?:纳税人识别号|统一社会信用代码|IdNum|TaxNo)[^0-9A-Z]{0,8}" + _USCC,
+    r"(?:销售方|销方|销\s*方|Seller)[^\n]{0,10}?"
+    r"(?:纳税人识别号|统一社会信用代码|IdNum|TaxNo)[^0-9A-Z]{0,8}" + _USCC,
     re.I,
 )
 _RE_BUYER_TAX = re.compile(
-    r"(?:购买方|购方|购\s*方|Buyer)[^\n]{0,80}?(?:纳税人识别号|统一社会信用代码|IdNum|TaxNo)[^0-9A-Z]{0,8}" + _USCC,
+    r"(?:购买方|购方|购\s*方|Buyer)[^\n]{0,10}?"
+    r"(?:纳税人识别号|统一社会信用代码|IdNum|TaxNo)[^0-9A-Z]{0,8}" + _USCC,
     re.I,
 )
 
@@ -283,15 +300,20 @@ _LABEL_ALT = re.compile(
 _NAME_LABEL_RE = re.compile(_spaced_label("名称") + r"\s*[：:]")
 # 裸「名称」写在行尾、值排到下一行（竖向标签、表格单元格都会这样）
 _NAME_BARE_RE = re.compile(_spaced_label("名称") + r"\s*$")
+# OCR 把冒号丢了：「名 称 广州恒信商贸有限公司」。只认后面隔着空白、紧接
+# 中文/字母数字的写法，值像不像公司名交给 _clean_name 把关。
+_NAME_LOOSE_RE = re.compile(_spaced_label("名称") + r"\s+(?=[\u4e00-\u9fa5A-Za-z0-9])")
 
 
 def _has_label(text: str) -> bool:
-    return bool(_LABEL_ALT.search(text) or _NAME_LABEL_RE.search(text))
+    return bool(_LABEL_ALT.search(text) or _NAME_LABEL_RE.search(text)
+                or _NAME_LOOSE_RE.search(text))
 
 
 def _starts_with_label(text: str) -> bool:
     """判断一段文本是否以标签开头（含裸「名称」，用于竖向标签重解析）。"""
-    return bool(_LABEL_ALT.match(text) or _NAME_LABEL_RE.match(text) or _NAME_BARE_RE.match(text))
+    return bool(_LABEL_ALT.match(text) or _NAME_LABEL_RE.match(text)
+                or _NAME_BARE_RE.match(text) or _NAME_LOOSE_RE.match(text))
 # 值里可能带的前缀噪声，如「（小写）」「(大写)」「：」「￥」
 _VALUE_PREFIX = re.compile(
     r"^[\s：:，,、）)】\]]*(?:[（(]\s*(?:小写|大写|含税|不含税)\s*[)）])?[\s：:￥¥]*"
@@ -369,7 +391,7 @@ def _iter_label_pairs(line: str):
     起始位置用于判断「这个无主标签离哪个购销方更近」。
     """
     hits = (list(_LABEL_ALT.finditer(line)) + list(_NAME_LABEL_RE.finditer(line))
-            + list(_NAME_BARE_RE.finditer(line)))
+            + list(_NAME_BARE_RE.finditer(line)) + list(_NAME_LOOSE_RE.finditer(line)))
     # 「购买方名称」这类完整标签会覆盖它内部的「名称」，按位置排序后丢掉被包含的命中
     hits.sort(key=lambda m: (m.start(), -(m.end() - m.start())))
     picked: list[re.Match] = []
@@ -463,10 +485,17 @@ def extract_by_lines(text: str) -> dict:
     amount_prio = 0
     # 记「上文最近的购销方」，用于归属无主的「名称」「统一社会信用代码」
     last_party: str | None = None
-    # 数电票的两栏区块：表头和值常常分行输出（先「购买方信息」「销售方信息」，
-    # 再「名称：买方」「名称：卖方」）。记住列顺序，同类型的值按列轮转归属。
-    block_parties: list[str] = []
+    # 数电票 / 老版增票的购销方区块有两种排法：
+    #   并排两栏——「购买方信息  销售方信息」一行，下面「名称：A  名称：B」；
+    #   上下两块——「购买方 / 名称：A / 税号 / 销售方 / 名称：B / 税号」。
+    # 两种都靠「表头出现的先后顺序」决定值的归属：同一轮表头里出现的顺序
+    # 就是值的列序（并排）或块序（上下）。用完一轮就清空，等下一轮表头。
+    # 名称和税号各自从第一列开始轮转——两栏票的「名称」行用完了，
+    # 下面那行「统一社会信用代码」还得从左栏重新数一遍。
+    column_parties: list[str] = []
     cursors = {"name": 0, "tax": 0}
+    # 表头整块漏检时「名称」无处归属：先存着，最后按「先购后销」回填
+    orphan_names: list[str] = []
 
     lines = _squeeze_lines(text).splitlines()
 
@@ -481,6 +510,11 @@ def extract_by_lines(text: str) -> dict:
         got = _clean_name(value)
         if not got:
             return
+        other = "seller" if party == "buyer" else "buyer"
+        # 同一家公司被同时按到购销双方头上：留空比留错好。真有两栏只读出一栏时，
+        # 空着的那个字段还能靠人工补，填成对方公司名反而会误导。
+        if got == fields.get(f"{other}_name"):
+            return
         key = f"{party}_name"
         # 先用「信息」「名称」这种脏值占了位，后面的真公司名也要能盖回来
         if _name_score(got) > _name_score(fields.get(key)):
@@ -494,8 +528,8 @@ def extract_by_lines(text: str) -> dict:
         if not pairs:
             continue
         # 同一行里出现多个「名称 / 统一社会信用代码」时（数电票左右两栏并排），
-        # 按从左到右 先购方、后销方 归属。只统计**能解析出有效值**的标签：
-        # 「统一社会信用代码/纳税人识别号」这种复合标签被拆开时，
+        # 表头漏检就得靠位置：左侧算购买方、右侧算销售方。只统计**能解析出
+        # 有效值**的标签：「统一社会信用代码/纳税人识别号」这种复合标签被拆开时，
         # 前半截的值是「/」，不能当成一条独立的税号去占位。
         name_slots = [i for i, p in enumerate(pairs)
                       if LABEL_FIELDS.get(p[0]) == "party_name" and _clean_name(p[1])]
@@ -513,9 +547,13 @@ def extract_by_lines(text: str) -> dict:
             # ---- 购销方区块标记：只更新归属，不产出字段 ----
             if key.startswith("ctx:"):
                 last_party = key.split(":", 1)[1]
-                if last_party not in block_parties:
-                    block_parties.append(last_party)
-                cursors["name"] = cursors["tax"] = 0
+                # 上一轮表头分配出去的值已经消费完，说明这是新的一轮区块
+                # （「购买方 / 名称 / 税号 / 销售方 / 名称 / 税号」的上下排法）
+                if cursors["name"] or cursors["tax"]:
+                    column_parties = []
+                    cursors = {"name": 0, "tax": 0}
+                if last_party not in column_parties:
+                    column_parties.append(last_party)
                 # 竖向标签被拼成「销售方信息名称」时，剩余部分仍是标签，重解析一遍
                 rest = value.strip("：: ")
                 parsed = list(_iter_label_pairs(rest)) if rest else []
@@ -537,14 +575,23 @@ def extract_by_lines(text: str) -> dict:
             # ---- 归属类标签：靠上下文判断是购买方还是销售方 ----
             if key == "party_name":
                 party = _party_before(line, start)
-                if len(name_slots) > 1 and i in name_slots:
+                if not party and cursors["name"] < len(column_parties):
+                    # 表头已经给了列序/块序，按顺序取（并排两栏靠这个才不会对调）
+                    party = column_parties[cursors["name"]]
+                if not party and len(name_slots) > 1 and i in name_slots:
                     party = "buyer" if name_slots.index(i) == 0 else "seller"
-                    cursors["name"] = len(name_slots)
-                elif not party:
-                    party = _next_party(block_parties, cursors, "name") or last_party
+                if not party:
+                    party = last_party
                 if party:
                     last_party = party
+                    if party in column_parties:
+                        cursors["name"] = max(cursors["name"], column_parties.index(party) + 1)
                     put_name(party, value)
+                else:
+                    # 连表头都没读到：先存着，结束前按「先购后销」补位
+                    got_name = _clean_name(value)
+                    if got_name:
+                        orphan_names.append(got_name)
                 i += 1
                 continue
 
@@ -552,21 +599,25 @@ def extract_by_lines(text: str) -> dict:
                 codes = _tax_codes(value)
                 if len(codes) >= 2:
                     # 两栏税号粘成一行：按列顺序分别归属，别再当成同一个
-                    targets = block_parties[:2] if len(block_parties) >= 2 else ["buyer", "seller"]
+                    targets = (column_parties[:2] if len(column_parties) >= 2
+                               else ["buyer", "seller"])
                     for party, code in zip(targets, codes[:2]):
                         fields.setdefault(f"{party}_tax_no", code)
-                    cursors["tax"] = len(targets)
+                    cursors["tax"] = len(column_parties)
                     i += 1
                     continue
                 got = codes[0] if codes else None
                 party = _party_before(line, start)
-                if len(tax_slots) > 1 and i in tax_slots:
+                if not party and cursors["tax"] < len(column_parties):
+                    party = column_parties[cursors["tax"]]
+                if not party and len(tax_slots) > 1 and i in tax_slots:
                     party = "buyer" if tax_slots.index(i) == 0 else "seller"
-                    cursors["tax"] = len(tax_slots)
-                elif not party:
-                    party = _next_party(block_parties, cursors, "tax") or last_party
+                if not party:
+                    party = last_party
                 if party and got:
                     last_party = party
+                    if party in column_parties:
+                        cursors["tax"] = max(cursors["tax"], column_parties.index(party) + 1)
                     fields.setdefault(f"{party}_tax_no", got)
                 i += 1
                 continue
@@ -574,7 +625,17 @@ def extract_by_lines(text: str) -> dict:
             if key in ("buyer_name", "seller_name"):
                 party = key.split("_")[0]
                 last_party = party
-                put_name(party, value)
+                got = _clean_name(value)
+                # 「购买方」「销售方」单独一行时只是区块表头（简称在下一行），
+                # 不能把「信息」二字当公司名，也不能让它顶掉后面真正的名称。
+                if got and _name_score(got) > 0:
+                    put_name(party, got)
+                else:
+                    if cursors["name"] or cursors["tax"]:
+                        column_parties = []
+                        cursors = {"name": 0, "tax": 0}
+                    if party not in column_parties:
+                        column_parties.append(party)
                 i += 1
                 continue
 
@@ -633,6 +694,20 @@ def extract_by_lines(text: str) -> dict:
                     fields.setdefault("invoice_type", got)
                 i += 1
 
+    # 「名称」整块没有归属（购销方表头漏检）：按版式惯例先购后销补位。
+    # 中国发票的购买方永远在左/上，销售方在后，OCR 把表头整行漏掉时这条最可靠。
+    for party in ("buyer", "seller"):
+        if fields.get(f"{party}_name"):
+            continue
+        other = "seller" if party == "buyer" else "buyer"
+        for name in orphan_names:
+            if name != fields.get(f"{other}_name"):
+                fields[f"{party}_name"] = name
+                orphan_names.remove(name)
+                break
+    # 兜到最后两边还是同一家：那是两栏被读成了一栏，销售方宁可空着
+    if fields.get("buyer_name") and fields.get("buyer_name") == fields.get("seller_name"):
+        fields.pop("seller_name", None)
     # 「价税合计（大写）」解析出来的数也是权威值，但优先级低于小写数字
     if deferred_amount is not None:
         offer_amount(deferred_amount, 3)
@@ -696,7 +771,10 @@ _NOISE_IN_NAME = re.compile(
 _BAD_NAME = re.compile(
     r"(?:信息|名称|名称信息|信息名称|地址|电话|开户行|开户银行|账号|税号|"
     r"纳税人识别号|统一社会信用代码|规格型号|单位|数量|单价|金额|税率|税额|"
-    r"项目名称|备注|及|无)"
+    r"项目名称|备注|及|无|"
+    # 「发票名称 增值税电子普通发票」这类结构词被 _NAME_LOOSE_RE（丢冒号）撞上时，
+    # 别把它当成公司名写到购销方头上（用 .* 是因为这里是 fullmatch）
+    r".*(?:发票|增值税|行程单|客票|开票人|收款人|复核).*)"
 )
 
 
@@ -719,6 +797,44 @@ def _clean_name(value: str) -> str | None:
     if 2 <= len(text) <= 60 and not re.fullmatch(r"[\d\W]+", text):
         return text
     return None
+
+
+def _names_from_patterns(squeezed: str) -> tuple[str | None, str | None]:
+    """段级兜底取购销方名称：显式标签优先，其余按出现顺序先购后销。
+
+    刻意**不认**「销售方…名称」这种跨字上下文——数电票表头「购买方信息 销售方信息」
+    后面紧跟的就是买方名称，任何跨表头的窗口都会把买方名认成卖方的。
+    """
+    # 显式标签：中文「销售方名称：X」/「购买方名称：Y」，以及 XML 的 SellerName/BuyerName
+    tags: dict[str, str] = {}
+    for party, regexes in (
+        ("buyer", (_RE_BUYER_NAME_TAG, _RE_XML_BUYER_NAME)),
+        ("seller", (_RE_SELLER_NAME_TAG, _RE_XML_SELLER_NAME)),
+    ):
+        for regex in regexes:
+            mo = regex.search(squeezed)
+            if mo:
+                got = _clean_name(mo.group(1))
+                if got and _name_score(got) > 0:
+                    tags[party] = got
+                    break
+
+    cands: list[str] = []
+    for mo in _RE_NAME_VALUE.finditer(squeezed):
+        got = _clean_name(mo.group(1))
+        if got and _name_score(got) > 0 and got not in cands:
+            cands.append(got)
+
+    buyer = tags.get("buyer")
+    seller = tags.get("seller")
+    for name in cands:
+        if not buyer and name != seller:
+            buyer = name
+        elif not seller and name != buyer:
+            seller = name
+        if buyer and seller:
+            break
+    return buyer, seller
 
 
 def _clean_tax_no(value: str) -> str | None:
@@ -1384,44 +1500,27 @@ def extract_by_patterns(text: str) -> dict:
             fields["invoice_date"] = got
 
     # 购销方
-    m = _RE_SELLER_CTX.search(squeezed)
-    if m:
-        fields["seller_name"] = m.group(1).strip()
-    m = _RE_BUYER_CTX.search(squeezed)
-    if m:
-        fields["buyer_name"] = m.group(1).strip()
-    if not fields.get("buyer_name") and not fields.get("seller_name"):
-        # 兜底：按「名称」前面的上下文判断归属；没有上下文时按左右顺序
-        # 先购后销。不能只看第一个——只有销售方一张票时会把卖方塞给买方。
-        found: list[tuple[str, str | None]] = []
-        for mo in _RE_NAME_ANY.finditer(squeezed):
-            name = mo.group(1).strip()
-            prefix = squeezed[max(0, mo.start() - 16) : mo.start()]
-            party = "seller" if (re.search(r"销", prefix) and not re.search(r"购", prefix)) else None
-            found.append((name, party))
-        unlabeled = [n for n, p in found if p is None]
-        for name, party in found:
-            if party:
-                fields.setdefault(f"{party}_name", name)
-        if unlabeled:
-            fields.setdefault("buyer_name", unlabeled[0])
-            if len(unlabeled) > 1:
-                fields.setdefault("seller_name", unlabeled[1])
+    buyer, seller = _names_from_patterns(squeezed)
+    if buyer:
+        fields["buyer_name"] = buyer
+    if seller:
+        fields["seller_name"] = seller
 
-    # 税号：优先按上下文定位，避免购销方对调
-    m = _RE_SELLER_TAX.search(squeezed)
-    if m:
-        fields["seller_tax_no"] = m.group(1)
-    m = _RE_BUYER_TAX.search(squeezed)
-    if m:
-        fields["buyer_tax_no"] = m.group(1)
-    if not fields.get("seller_tax_no") and not fields.get("buyer_tax_no"):
-        uscc = _RE_USCC.findall(squeezed)
-        if uscc:
-            uniq = list(dict.fromkeys(uscc))
-            fields["buyer_tax_no"] = uniq[0]
-            if len(uniq) > 1:
-                fields["seller_tax_no"] = uniq[1]
+    # 税号：优先按紧邻的上下文标签定位，否则按票面出现顺序先购后销
+    for party, regex in (("seller", _RE_SELLER_TAX), ("buyer", _RE_BUYER_TAX)):
+        m = regex.search(squeezed)
+        if m:
+            fields.setdefault(f"{party}_tax_no", m.group(1))
+    if not fields.get("seller_tax_no") or not fields.get("buyer_tax_no"):
+        uscc = list(dict.fromkeys(_RE_USCC.findall(squeezed)))
+        for party in ("buyer", "seller"):
+            if fields.get(f"{party}_tax_no"):
+                continue
+            other = "seller" if party == "buyer" else "buyer"
+            for code in uscc:
+                if code != fields.get(f"{other}_tax_no"):
+                    fields[f"{party}_tax_no"] = code
+                    break
 
     # 发票类型
     got = _type_from_text(squeezed)
@@ -1656,6 +1755,11 @@ def recognize(
         return empty
 
     merged.setdefault("invoice_type", DEFAULT_TYPE)
+    # 购销方是「互斥归属」：行级与段级各补一半时，可能把同一家公司填到两边。
+    # 这种情况下销售方宁可留空（人工一眼能看出来要补），也不能显示成买方。
+    for left, right in (("buyer_name", "seller_name"), ("buyer_tax_no", "seller_tax_no")):
+        if merged.get(left) and merged.get(left) == merged.get(right):
+            merged.pop(right, None)
     result = _empty(best_source)
     result.update(merged)
     result["confidence"] = _confidence(best_source, merged)
