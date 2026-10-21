@@ -1448,19 +1448,29 @@ def _confidence(source: str, fields: dict) -> float:
 _INVOICE_HINT = re.compile(r"(发票|票据|行程单|客票)")
 _AMOUNT_LINE = re.compile(r"(价税合计|小写|含税金额|价税总计)")
 _NAME_LINE = re.compile(r"名\s*称")
+_PARTY_HINT = re.compile(r"(销售方|购买方|销方|购方)")
+_TAX_LINE = re.compile(r"(统一社会信用代码|纳税人识别号|税号)")
 
 
 def _ocr_missing_key_info(text: str) -> bool:
-    """发票件的 OCR 文本是否整行缺了金额或购销方名称。
+    """发票件的 OCR 文本是否整行缺了金额、购销方名称或双方税号。
 
     缺行时值得用增强图再跑一次：置信度再高，漏检的那一行也读不出来。
-    只盯这两个字段——它们缺了表单就填不出来，用户必须手打；
-    税号缺行也补，但为此让每张票多花 7 秒不值（增强一遍约翻倍）。
+    触发条件刻意收紧，避免每张票都翻倍耗时：
+
+    - 金额行或名称行缺 → 必补（表单直接填不出来）；
+    - 有购销方区块头却整块没有税号行 → 补（数电票两栏税号常被检测框合并后漏掉，
+      增强图能把它拆成两行读出来）。普通增票的「纳税人识别号」是独立行，
+      正常能读到，不会多跑一遍；
+    - 税号触发要求文本里先出现「购买方/销售方」，行程单、出租车票这类
+      没有购销方概念的票不会被这条规则带跑。
     """
     got = text or ""
     if not _INVOICE_HINT.search(got):
         return False
-    return not _AMOUNT_LINE.search(got) or not _NAME_LINE.search(got)
+    if not _AMOUNT_LINE.search(got) or not _NAME_LINE.search(got):
+        return True
+    return bool(_PARTY_HINT.search(got)) and not _TAX_LINE.search(got)
 
 
 def _file_texts(data: bytes, name: str, use_ocr: bool) -> tuple[list[tuple[str, str]], dict]:
