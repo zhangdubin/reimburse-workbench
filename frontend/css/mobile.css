@@ -1084,4 +1084,14 @@
   .bk-card .table-wrap { overflow-x: auto; }
   .bk-store { min-width: 0; }
   .bk-space-txt { flex-wrap: wrap; }
+
+  /* 凭证打印：选择区在窄屏要能吃下整行，别把老长的票号撑出横向滚动 */
+  .vp-pick { max-height: 46vh; }
+  .vp-grp-h { flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+  .vp-grp-m { flex: 1 1 100%; order: 3; }
+  .vp-doc { gap: var(--sp-3); padding: var(--sp-2); }
+  .vp-thumb { width: 44px; height: 34px; }
+  .vp-quick-b { height: 34px; padding: 0 14px; }
+  .vp-row { flex-wrap: wrap; }
+  .vp-lbl { width: 100%; }
 }

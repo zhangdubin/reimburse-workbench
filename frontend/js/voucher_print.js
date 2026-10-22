@@ -17,7 +17,7 @@
   'use strict';
 
   const U = WB.util;
-  const V = '2.9.29';                 // 与 index.html 的 ?v= 一致，改版要同步
+  const V = '2.9.30';                 // 与 index.html 的 ?v= 一致，改版要同步
   const PDF_MAX_PAGES = 5;            // 单份 PDF 最多渲染页数（防超大文件把内存吃干）
   const WIDE_RATIO = 1.35;            // 宽高比 ≥ 此值按「横长票」处理，独占一行
 
@@ -36,20 +36,15 @@
     { id: '6', label: '6 张/页', cols: 2, rows: 3 },
   ];
 
-  const KINDS = [
-    { id: 'invoice', label: '发票影像' },
-    { id: 'itinerary', label: '行程单' },
-    { id: 'folio', label: '消费水单' },
-    { id: 'other', label: '其他材料' },
-  ];
-
   const state = {
     layout: 'auto',
     quality: 'std',
-    kinds: KINDS.map((k) => k.id),
     cutLine: true,
     pageNo: true,
   };
+
+  // 凭证类型标签由后端 kind_label 提供，前端只在快捷选择里区分「发票影像 / 随票凭证」
+  const PRESET_KEY = 'wb.vp.preset';
 
   /* ------------------------------------------------------------------ *
    * pdf.js 懒加载
@@ -324,7 +319,7 @@ window.onload = () => {
   }
 
   /* ------------------------------------------------------------------ *
-   * 设置弹窗
+   * 凭证选择 + 打印设置弹窗
    * ------------------------------------------------------------------ */
   function segButtons(list, cur, attr) {
     return `<div class="vp-seg">${list
@@ -335,53 +330,158 @@ window.onload = () => {
       .join('')}</div>`;
   }
 
+  // 快捷选择：全选/清空最常用，按类型的两个按钮覆盖「只要发票影像」这类典型场景
+  const PRESETS = [
+    { id: 'all', label: '全选' },
+    { id: 'none', label: '清空' },
+    { id: 'invoice', label: '仅发票影像' },
+    { id: 'attach', label: '仅随票凭证' },
+  ];
+
+  function fmtSize(n) {
+    if (!n && n !== 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function pickHtml(data) {
+    const groups = (data.invoices || [])
+      .filter((inv) => (inv.attachments || []).length)
+      .map((inv) => {
+        const metas = [
+          inv.invoice_no ? `票号 ${inv.invoice_no}` : '',
+          inv.amount ? `¥${Number(inv.amount).toFixed(2)}` : '',
+          inv.invoice_date || '',
+          inv.seller_name || '',
+        ].filter(Boolean).join(' · ');
+        const cards = (inv.attachments || [])
+          .map(
+            (a) => `
+            <label class="vp-doc" data-doc="${a.id}" data-kind="${U.esc(a.kind || 'invoice')}">
+              <input type="checkbox" data-doc="${a.id}">
+              <span class="vp-thumb" data-thumb-box="${a.id}">
+                ${a.media === 'image'
+                  ? `<img data-thumb="${a.id}" alt="">`
+                  : `<i class="vp-ext">${a.media === 'pdf' ? 'PDF' : (a.filename || '').split('.').pop().slice(0, 4).toUpperCase() || '文件'}</i>`}
+              </span>
+              <span class="vp-doc-m">
+                <span class="vp-doc-t">
+                  <b>${U.esc(a.kind_label || '凭证')}</b>
+                  <em class="vp-tag">${a.media === 'pdf' ? 'PDF' : a.media === 'image' ? '图片' : '原件'}</em>
+                </span>
+                <span class="vp-doc-f" title="${U.esc(a.filename || '')}">${U.esc(a.filename || '')}${a.size ? ' · ' + fmtSize(a.size) : ''}</span>
+              </span>
+            </label>`
+          )
+          .join('');
+        return `
+          <div class="vp-grp" data-grp="${inv.id}">
+            <div class="vp-grp-h">
+              <label class="vp-ck"><input type="checkbox" data-grp-all="${inv.id}"><span>${U.esc(inv.invoice_no || ('发票 #' + inv.id))}</span></label>
+              <span class="vp-grp-m">${U.esc(metas)}</span>
+            </div>
+            <div class="vp-grp-b">${cards}</div>
+          </div>`;
+      })
+      .join('');
+    return groups || '';
+  }
+
   function settingsHtml(data) {
     const s = data.stats || {};
-    const kinds = KINDS.map(
-      (k) =>
-        `<label class="vp-ck"><input type="checkbox" data-kind="${k.id}" ${state.kinds.indexOf(k.id) >= 0 ? 'checked' : ''}><span>${U.esc(k.label)}</span></label>`
-    ).join('');
     const warn = s.no_doc_invoices
-      ? `<div class="vp-note warn">有 <b>${s.no_doc_invoices}</b> 张发票还没上传影像，打印时不会出现在纸张上。</div>`
+      ? `<div class="vp-note warn">有 <b>${s.no_doc_invoices}</b> 张发票还没上传影像，无法打印。</div>`
       : '';
     return `
       <div class="vp-sum">
         <div><b>${s.invoice_count || 0}</b><span>发票</span></div>
-        <div><b>${s.doc_count || 0}</b><span>凭证</span></div>
+        <div><b>${s.doc_count || 0}</b><span>可选凭证</span></div>
         <div><b>${s.pdf_count || 0}</b><span>PDF</span></div>
         <div><b>${s.image_count || 0}</b><span>图片</span></div>
       </div>
       ${warn}
-      <div class="vp-row">
-        <div class="vp-lbl">拼版</div>
-        <div class="vp-ctl">${segButtons(LAYOUTS, state.layout, 'lay')}</div>
+      <div class="vp-sec">
+        <div class="vp-sec-h">
+          <span><i class="vp-step">1</i>选择要打印的凭证</span>
+          <span class="vp-sel" id="vp-sel">已选 0 / ${s.doc_count || 0}</span>
+        </div>
+        <div class="vp-quick">
+          <span class="vp-quick-l">快捷选择</span>
+          ${PRESETS.map((p) => `<button type="button" class="vp-quick-b" data-preset="${p.id}">${U.esc(p.label)}</button>`).join('')}
+        </div>
+        <div class="vp-pick" id="vp-pick">${pickHtml(data)}</div>
       </div>
-      <div class="vp-row">
-        <div class="vp-lbl">清晰度</div>
-        <div class="vp-ctl">${segButtons(
-          Object.keys(QUALITY).map((k) => ({ id: k, label: QUALITY[k].label })),
-          state.quality,
-          'q'
-        )}</div>
-      </div>
-      <div class="vp-row">
-        <div class="vp-lbl">凭证类型</div>
-        <div class="vp-ctl vp-kinds">${kinds}</div>
-      </div>
-      <div class="vp-row">
-        <div class="vp-lbl">裁剪虚线</div>
-        <div class="vp-ctl"><label class="switch"><input type="checkbox" id="vp-cut" ${state.cutLine ? 'checked' : ''}><span class="slider"></span></label>
-          <span class="muted" style="font-size:12px">沿虚线剪下即可贴票</span></div>
-      </div>
-      <div class="vp-row">
-        <div class="vp-lbl">页码</div>
-        <div class="vp-ctl"><label class="switch"><input type="checkbox" id="vp-pn" ${state.pageNo ? 'checked' : ''}><span class="slider"></span></label>
-          <span class="muted" style="font-size:12px">页脚标注单号与第几页/共几页</span></div>
+      <div class="vp-sec">
+        <div class="vp-sec-h"><span><i class="vp-step">2</i>打印设置</span></div>
+        <div class="vp-row">
+          <div class="vp-lbl">拼版</div>
+          <div class="vp-ctl">${segButtons(LAYOUTS, state.layout, 'lay')}</div>
+        </div>
+        <div class="vp-row">
+          <div class="vp-lbl">清晰度</div>
+          <div class="vp-ctl">${segButtons(
+            Object.keys(QUALITY).map((k) => ({ id: k, label: QUALITY[k].label })),
+            state.quality,
+            'q'
+          )}</div>
+        </div>
+        <div class="vp-row">
+          <div class="vp-lbl">裁剪虚线</div>
+          <div class="vp-ctl"><label class="switch"><input type="checkbox" id="vp-cut" ${state.cutLine ? 'checked' : ''}><span class="slider"></span></label>
+            <span class="muted" style="font-size:12px">沿虚线剪下即可贴票</span></div>
+        </div>
+        <div class="vp-row">
+          <div class="vp-lbl">页码</div>
+          <div class="vp-ctl"><label class="switch"><input type="checkbox" id="vp-pn" ${state.pageNo ? 'checked' : ''}><span class="slider"></span></label>
+            <span class="muted" style="font-size:12px">页脚标注单号与第几页/共几页</span></div>
+        </div>
       </div>
       <div class="vp-prog" id="vp-prog" style="display:none">
         <div class="vp-bar"><i id="vp-bar-i"></i></div>
         <div class="vp-prog-t" id="vp-prog-t">准备中…</div>
       </div>`;
+  }
+
+  /** 图片凭证的缩略图：书脊式的小图，让用户一眼认出是哪一张票 */
+  async function loadThumbs(root, data) {
+    const queue = [];
+    (data.invoices || []).forEach((inv) =>
+      (inv.attachments || []).forEach((a) => {
+        if (a.media === 'image') queue.push(a);
+      })
+    );
+    if (!queue.length) return;
+
+    const run = async () => {
+      while (queue.length) {
+        if (!root.isConnected) return; // 弹窗已关闭，别再占带宽
+        const a = queue.shift();
+        try {
+          const blob = await authFetch(a.url);
+          const bmp = await createImageBitmap(blob);
+          const long = Math.max(bmp.width, bmp.height) || 1;
+          const sc = Math.min(1, 200 / long);
+          const cv = document.createElement('canvas');
+          cv.width = Math.max(1, Math.round(bmp.width * sc));
+          cv.height = Math.max(1, Math.round(bmp.height * sc));
+          const cx = cv.getContext('2d');
+          cx.fillStyle = '#fff';
+          cx.fillRect(0, 0, cv.width, cv.height);
+          cx.drawImage(bmp, 0, 0, cv.width, cv.height);
+          if (bmp.close) bmp.close();
+          const img = U.qs(`[data-thumb="${a.id}"]`, root);
+          if (img && root.isConnected) {
+            img.src = cv.toDataURL('image/jpeg', 0.7);
+            img.classList.add('on');
+          }
+        } catch (_) {
+          const box = U.qs(`[data-thumb-box="${a.id}"]`, root);
+          if (box) box.classList.add('failed');
+        }
+      }
+    };
+    for (let i = 0; i < 3; i++) run();
   }
 
   /* ------------------------------------------------------------------ *
@@ -422,12 +522,61 @@ window.onload = () => {
 
     U.modal({
       title: '打印凭证',
-      width: 560,
+      width: 720,
       body: settingsHtml(data),
       footer: `<button class="btn" data-close>取消</button>
-               <button class="btn btn-primary" id="vp-go">开始打印</button>`,
+               <button class="btn btn-primary" id="vp-go" disabled>开始打印</button>`,
       onMount(apiMod) {
         const el = apiMod.el;
+        const goBtn = U.qs('#vp-go', el);
+        const selTxt = U.qs('#vp-sel', el);
+        const total = U.qsa('input[data-doc]', el).length;
+
+        /** 选中集以 DOM 勾选为准，避免「界面显示的和实际打印的」两套状态走偏 */
+        const selectedIds = () =>
+          U.qsa('input[data-doc]', el).filter((c) => c.checked).map((c) => Number(c.dataset.doc));
+
+        function refresh() {
+          const ids = selectedIds();
+          selTxt.textContent = `已选 ${ids.length} / ${total}`;
+          selTxt.classList.toggle('on', ids.length > 0);
+          goBtn.disabled = ids.length === 0;
+          goBtn.textContent = ids.length ? `开始打印（${ids.length} 份）` : '开始打印';
+          U.qsa('.vp-doc', el).forEach((d) => {
+            const c = U.qs('input[data-doc]', d);
+            d.classList.toggle('on', !!(c && c.checked));
+          });
+          // 发票分组框：全选打勾、部分选中打横线
+          U.qsa('.vp-grp', el).forEach((g) => {
+            const subs = U.qsa('input[data-doc]', g);
+            const hits = subs.filter((c) => c.checked).length;
+            const head = U.qs('input[data-grp-all]', g);
+            head.checked = hits > 0 && hits === subs.length;
+            head.indeterminate = hits > 0 && hits < subs.length;
+            g.classList.toggle('picked', hits > 0);
+          });
+        }
+
+        function applyPreset(p) {
+          U.qsa('input[data-doc]', el).forEach((c) => {
+            const k = c.closest('.vp-doc').dataset.kind;
+            if (p === 'all') c.checked = true;
+            else if (p === 'none') c.checked = false;
+            else if (p === 'invoice') c.checked = k === 'invoice';
+            else c.checked = k !== 'invoice'; // 仅随票凭证
+          });
+          try { localStorage.setItem(PRESET_KEY, p); } catch (_) {}
+          refresh();
+        }
+
+        U.on(el, 'click', '.vp-quick-b[data-preset]', (e, t) => applyPreset(t.dataset.preset));
+        U.on(el, 'change', 'input[data-doc]', () => refresh());
+        U.on(el, 'change', 'input[data-grp-all]', (e, head) => {
+          const g = head.closest('.vp-grp');
+          U.qsa('input[data-doc]', g).forEach((c) => { c.checked = head.checked; });
+          refresh();
+        });
+
         U.on(el, 'click', '.vp-seg-b[data-lay]', (e, t) => {
           state.layout = t.dataset.lay;
           U.qsa('.vp-seg-b[data-lay]', el).forEach((b) => b.classList.toggle('on', b === t));
@@ -436,38 +585,38 @@ window.onload = () => {
           state.quality = t.dataset.q;
           U.qsa('.vp-seg-b[data-q]', el).forEach((b) => b.classList.toggle('on', b === t));
         });
-        U.qsa('input[data-kind]', el).forEach((c) => {
-          c.onchange = () => {
-            const id = c.dataset.kind;
-            const i = state.kinds.indexOf(id);
-            if (c.checked && i < 0) state.kinds.push(id);
-            if (!c.checked && i >= 0) state.kinds.splice(i, 1);
-          };
-        });
         const cut = U.qs('#vp-cut', el);
         const pn = U.qs('#vp-pn', el);
         cut.onchange = () => { state.cutLine = cut.checked; };
         pn.onchange = () => { state.pageNo = pn.checked; };
 
-        U.qs('#vp-go', el).onclick = async () => {
-          const kinds = state.kinds.slice();
+        // 默认不替用户做主：一张都不预选；上次用过的快捷方式会被记住，常打印全
+        // 部的人点一次「全选」后，下次打开就是这个习惯。
+        let last = 'none';
+        try { last = localStorage.getItem(PRESET_KEY) || 'none'; } catch (_) {}
+        applyPreset(last);
+        loadThumbs(el, data);
+
+        goBtn.onclick = async () => {
+          const ids = selectedIds();
+          if (!ids.length) {
+            U.toast('请先勾选要打印的凭证', 'warn');
+            return;
+          }
           const q = QUALITY[state.quality] || QUALITY.std;
+          // 严格按「发票顺序 → 凭证顺序」取，跟列表所见一致
           const picked = [];
           (data.invoices || []).forEach((inv) => {
             (inv.attachments || []).forEach((a) => {
-              if (kinds.indexOf(a.kind || 'invoice') >= 0) picked.push({ inv, doc: a });
+              if (ids.indexOf(a.id) >= 0) picked.push({ inv, doc: a });
             });
           });
-          if (!picked.length) {
-            U.toast('当前凭证类型筛选下没有可打印的凭证', 'warn');
-            return;
-          }
 
           const prog = U.qs('#vp-prog', el);
           const bar = U.qs('#vp-bar-i', el);
           const txt = U.qs('#vp-prog-t', el);
           prog.style.display = 'block';
-          U.qs('#vp-go', el).disabled = true;
+          goBtn.disabled = true;
 
           const tiles = [];
           let failed = 0;
@@ -521,8 +670,8 @@ window.onload = () => {
             meta: {
               title: reb ? `凭证 ${reb.code}` : '凭证打印',
               right: reb
-                ? `${reb.code} · ${reb.applicant || ''}`
-                : `发票 ${data.stats.invoice_count} 张 · 凭证 ${data.stats.doc_count} 份`,
+                ? `${reb.code} · ${reb.applicant || ''} · 凭证 ${tiles.length} 份`
+                : `凭证 ${tiles.length} 份`,
             },
           });
           apiMod.close();

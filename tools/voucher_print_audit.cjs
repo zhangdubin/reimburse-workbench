@@ -29,6 +29,7 @@ const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const BASE = (positional[0] || 'http://127.0.0.1:8792').replace(/\/$/, '');
 const OUT = positional[1] || '/tmp/wb-vp';
 const LAYOUT = arg('layout', 'auto');
+const PICK = arg('pick', 'all');      // all=全选，one=只勾第一份（验证"选谁打谁"）
 const VW = Number(arg('w', 1440));
 const VH = Number(arg('h', 900));
 const FIX = path.join(__dirname, 'fixtures');
@@ -174,12 +175,39 @@ async function prepare() {
   }, data.invoiceNo);
   check('接口统计：3 份凭证（2 图 + 1 PDF）', before.doc_count === 3 && before.image_count === 2 && before.pdf_count === 1, JSON.stringify(before));
 
-  const popupPromise = page.waitForEvent('popup', { timeout: 20000 });
   await page.click('#doc-print');
-  await page.waitForSelector('.vp-sum', { timeout: 15000 });
-  check('打印设置弹窗打开', true);
-  check('设置弹窗显示统计（发票/凭证/PDF/图片）', (await page.locator('.vp-sum > div').count()) === 4);
+  await page.waitForSelector('.vp-pick', { timeout: 15000 });
+  check('打印弹窗打开并带出凭证选择区', true);
+  check('统计仍是四格（发票/可选凭证/PDF/图片）', (await page.locator('.vp-sum > div').count()) === 4);
+  check('列出 3 份凭证可选择', (await page.locator('.vp-doc').count()) === 3, String(await page.locator('.vp-doc').count()));
 
+  // 关键：不能默认全选——没勾选时「开始打印」必须是禁用的
+  const initTxt = await page.locator('#vp-sel').textContent();
+  check('默认一张都不预选', /已选 0 \/ 3/.test(initTxt.trim()), initTxt);
+  check('未勾选时打印按钮禁用', await page.locator('#vp-go').isDisabled());
+
+  // 图片缩略图要真的加载出来（PDF 走角标，不算在内）
+  await page.waitForFunction(
+    () => document.querySelectorAll('.vp-thumb img.on').length >= 2,
+    null,
+    { timeout: 15000 }
+  ).catch(() => {});
+  check('图片凭证加载出缩略图', (await page.locator('.vp-thumb img.on').count()) === 2,
+    String(await page.locator('.vp-thumb img.on').count()));
+
+  if (PICK === 'one') {
+    // 只勾第一份：打印出来的格数应当也只剩 1 格
+    await page.locator('.vp-doc input[data-doc]').first().check();
+  } else {
+    await page.click('.vp-quick-b[data-preset="all"]');
+  }
+  const onTxt = (await page.locator('#vp-sel').textContent()).trim();
+  const wantN = PICK === 'one' ? 1 : 3;
+  check(`快捷选择后计数正确（${wantN} 份）`, onTxt === `已选 ${wantN} / 3`, onTxt);
+  check('开始打印按钮带上所选份数', (await page.locator('#vp-go').textContent()).includes(`${wantN} 份`));
+  check('有勾选后按钮可用', !(await page.locator('#vp-go').isDisabled()));
+
+  const popupPromise = page.waitForEvent('popup', { timeout: 20000 });
   await page.click(`.vp-seg-b[data-lay="${LAYOUT}"]`);
   await page.click('#vp-go');
 
@@ -225,7 +253,9 @@ async function prepare() {
   console.log('\n== 排版检查 ==');
   check('生成了打印页', r.pageCount >= 1, JSON.stringify(r));
   check('图片全部渲染成功（无裂图）', r.broken === 0, `broken=${r.broken}`);
-  check('图片数量 = 3 份凭证', r.imgs === 3, `imgs=${r.imgs}`);
+  // PDF 样本是单页，渲染出 1 张图；所以「打印出来的图数」= 勾选的凭证数
+  const wantImgs = PICK === 'one' ? 1 : 3;
+  check(`只打勾选的凭证（${wantImgs} 张）`, r.imgs === wantImgs, `imgs=${r.imgs}`);
   check('页码连续且带总数', r.foots.length === r.pageCount && r.foots[0].includes(`1 / ${r.pageCount}`), JSON.stringify(r.foots));
   check('页面高度锁定 A4（无溢出空白页）', r.pageH > 1000 && r.bodyH <= r.pageCount * r.pageH + 40, `pageH=${r.pageH} bodyH=${r.bodyH}`);
 
@@ -242,7 +272,8 @@ async function prepare() {
   }
   console.log(`  每页格数：[${per}]，空白格 ${r.blank}，整行格 ${r.wide}`);
 
-  await p2.screenshot({ path: path.join(OUT, `layout-${LAYOUT}.png`), fullPage: true });
+  const shot = PICK === 'one' ? `layout-${LAYOUT}-pick1.png` : `layout-${LAYOUT}.png`;
+  await p2.screenshot({ path: path.join(OUT, shot), fullPage: true });
   check('无 JS 报错', errors.filter((e) => !/favicon/i.test(e)).length === 0, errors.slice(0, 2).join(' | '));
 
   await browser.close();
