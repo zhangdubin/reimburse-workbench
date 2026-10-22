@@ -508,7 +508,7 @@ def main():
     if st != 200:
         print("服务没起来，先 tools/dev_server.sh start")
         return
-    check("版本为 2.9.28", str(health.get("version")) == "2.9.28", health.get("version"))
+    check("版本为 2.9.29", str(health.get("version")) == "2.9.29", health.get("version"))
 
     st, d, _ = req("POST", "/api/auth/login", body={"username": ADMIN_USER, "password": ADMIN_PASSWORD})
     check("管理员登录成功", st == 200 and d.get("token"), f"{st} {d}")

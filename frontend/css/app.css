@@ -1678,3 +1678,41 @@ table.kv td .hint { display: inline; margin-left: 8px; }
   .sso-rm-row .rm-v { width: 110px; }
   .rm-add { width: 100%; }
 }
+
+/* ---------------- 凭证打印设置弹窗（v2.9.29） ---------------- */
+/* 概览数字：发票/凭证/PDF/图片四格，一眼知道这轮会打出多少张纸 */
+.vp-sum {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  padding: 12px; margin-bottom: 12px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2);
+}
+.vp-sum > div { text-align: center; min-width: 0; }
+.vp-sum b { display: block; font-size: 18px; color: var(--text); line-height: 1.3; }
+.vp-sum span { font-size: var(--fs-xs); color: var(--text-2); }
+
+.vp-note { padding: 8px 12px; border-radius: var(--radius-sm); font-size: var(--fs-sm); margin-bottom: 10px; }
+.vp-note.warn { background: var(--warning-weak); color: var(--warning); border: 1px solid #fde2c2; }
+
+.vp-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--border); }
+.vp-row:first-of-type { border-top: none; }
+.vp-lbl { flex: none; width: 68px; font-size: var(--fs-sm); color: var(--text-2); }
+.vp-ctl { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* 分段按钮：拼版/清晰度的互斥选择，比下拉少一次点击 */
+.vp-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; background: #fff; }
+.vp-seg-b {
+  padding: 0 12px; height: 30px; line-height: 30px; border: none; background: #fff;
+  color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
+  border-right: 1px solid var(--border); font-family: inherit;
+}
+.vp-seg-b:last-child { border-right: none; }
+.vp-seg-b:hover { background: var(--panel-2); }
+.vp-seg-b.on { background: var(--primary); color: #fff; }
+
+.vp-kinds { gap: 14px; }
+.vp-ck { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--text); cursor: pointer; }
+
+.vp-prog { margin-top: 12px; }
+.vp-bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.vp-bar i { display: block; height: 100%; width: 0; background: var(--primary); transition: width .2s ease; }
+.vp-prog-t { margin-top: 6px; font-size: var(--fs-xs); color: var(--text-2); }

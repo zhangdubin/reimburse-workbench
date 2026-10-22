@@ -1,0 +1,158 @@
+"""凭证打印数据接口（v2.9.29）
+
+    GET /api/print/vouchers?ids=1,2,3          按发票 id 取打印清单
+    GET /api/print/vouchers?reimbursement_id=8 取整张报销单的打印清单
+
+为什么不在前端逐个调 /api/invoices/{id}/attachments：
+  一张报销单动辄十几张票，逐票请求会打出十几个并发，且前端拿不到统一的
+  「哪张票没有影像」统计。这里一次查齐，顺带把打印顺序定好——
+  发票本体在前、随票凭证（行程单/水单/其他）在后，跟贴票顺序一致。
+
+鉴权：只要登录就能调，但发票要过 invoice_scope_conds 的可见范围过滤；
+      传 reimbursement_id 时额外过一次报销单可见性，避免越权拼 id 拿别人的票。
+"""
+
+from __future__ import annotations
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from .. import models as m
+from .. import security as sec
+from ..database import get_db
+
+router = APIRouter(prefix="/api/print", tags=["打印"])
+
+# 随票凭证的打印排序：发票本体 → 行程单 → 消费水单 → 其他，同类型内按 id
+_KIND_ORDER = {
+    m.DOC_INVOICE: 0,
+    m.DOC_ITINERARY: 1,
+    m.DOC_FOLIO: 2,
+    m.DOC_OTHER: 3,
+}
+
+_IMAGE_MIME = ("image/",)
+_PDF_MIME = ("application/pdf",)
+
+
+def _doc_out(a: m.InvoiceAttachment) -> dict:
+    kind = getattr(a, "kind", None) or m.DOC_INVOICE
+    mime = (a.mime or "").split(";")[0].strip().lower()
+    if mime in _PDF_MIME:
+        media = "pdf"
+    elif mime.startswith(_IMAGE_MIME):
+        media = "image"
+    else:
+        # ofd/xml/xlsx 等原件没法直接上图，打印时给占位卡
+        media = "other"
+    return {
+        "id": a.id,
+        "kind": kind,
+        "kind_label": m.DOC_KIND_LABELS.get(kind, kind),
+        "filename": a.filename,
+        "mime": mime,
+        "media": media,
+        "size": a.size,
+        "url": f"/api/attachments/{a.id}/raw",
+    }
+
+
+def _invoice_out(v: m.Invoice) -> dict:
+    docs = sorted(
+        (v.attachments or []),
+        key=lambda a: (_KIND_ORDER.get(getattr(a, "kind", None) or m.DOC_INVOICE, 9), a.id),
+    )
+    return {
+        "id": v.id,
+        "invoice_no": v.invoice_no,
+        "invoice_code": v.invoice_code,
+        "invoice_type": v.invoice_type,
+        "invoice_date": v.invoice_date.isoformat() if v.invoice_date else None,
+        "amount": float(v.amount or 0),
+        "seller_name": v.seller_name,
+        "category_name": v.category.name if v.category else None,
+        "reimbursement_code": v.reimbursement.code if v.reimbursement else None,
+        "reimbursement_id": v.reimbursement_id,
+        "attachments": [_doc_out(a) for a in docs],
+    }
+
+
+@router.get("/vouchers", response_model=dict)
+def print_vouchers(
+    user: Annotated[m.AppUser, Depends(sec.current_user)],
+    db: Session = Depends(get_db),
+    ids: str = Query("", description="发票 id，英文逗号分隔"),
+    reimbursement_id: int = Query(0, description="报销单 id（与 ids 二选一）"),
+):
+    rid = reimbursement_id or 0
+    id_list: list[int] = []
+    if ids.strip():
+        for part in ids.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if not part.isdigit():
+                raise HTTPException(400, f"发票 id 不是数字：{part}")
+            id_list.append(int(part))
+
+    if not rid and not id_list:
+        raise HTTPException(400, "请提供 ids 或 reimbursement_id")
+
+    conds = sec.invoice_scope_conds(user)
+    q = db.query(m.Invoice)
+
+    reb = None
+    if rid:
+        reb = db.get(m.Reimbursement, rid)
+        if not reb:
+            raise HTTPException(404, "报销单不存在")
+        # 可见性：管理员/财务放行，其余走 can_view（越权直接 403，不静默返回空）
+        if user.role not in (m.ROLE_ADMIN, m.ROLE_FINANCE):
+            if not sec.can_view(user, reb):
+                raise HTTPException(403, "无权访问该报销单")
+        q = q.filter(m.Invoice.reimbursement_id == rid)
+    else:
+        q = q.filter(m.Invoice.id.in_(id_list))
+
+    for c in conds:
+        q = q.filter(c)
+
+    invoices = sorted(q.all(), key=lambda v: v.id)
+    # 按 ids 传入的顺序不好还原时，至少保证同一报销单内按 id 升序，跟明细顺序一致
+
+    out = [_invoice_out(v) for v in invoices]
+
+    doc_count = sum(len(i["attachments"]) for i in out)
+    pdf_count = sum(1 for i in out for a in i["attachments"] if a["media"] == "pdf")
+    image_count = sum(1 for i in out for a in i["attachments"] if a["media"] == "image")
+    other_count = doc_count - pdf_count - image_count
+
+    return {
+        "reimbursement": (
+            {
+                "id": reb.id,
+                "code": reb.code,
+                "title": reb.title,
+                "applicant": reb.applicant.name if reb.applicant else None,
+                "department": reb.department.name if reb.department else None,
+                "total": float(reb.total_amount or 0),
+                "status": reb.status,
+            }
+            if reb
+            else None
+        ),
+        "invoices": out,
+        "stats": {
+            "invoice_count": len(out),
+            "doc_count": doc_count,
+            "pdf_count": pdf_count,
+            "image_count": image_count,
+            "other_count": other_count,
+            "no_doc_invoices": sum(1 for i in out if not i["attachments"]),
+            "missing_invoices": (
+                len(id_list) - len(out) if id_list and not rid else 0
+            ),
+        },
+    }

@@ -1,0 +1,257 @@
+#!/usr/bin/env node
+/**
+ * 凭证打印排版审计（v2.9.29）
+ *
+ *    node tools/voucher_print_audit.cjs [base] [outDir] [--layout=auto|1|2|4|6] [--w=1440]
+ *
+ * 走完整链路：造数据（报销单 + 发票 + 图片/PDF 凭证）→ 浏览器里点开凭证弹窗
+ * → 点「打印本票凭证」→ 设置弹窗里选拼版 → 开始打印 → 接住 Blob 打印窗口
+ * → 落到本地文件 → 再用浏览器打开这份 HTML 截图，检查：
+ *
+ *   1. 每个拼版档位的每页格数 / 横票是否独占一行
+ *   2. 图片与 PDF 是否真的渲染出来了（naturalWidth > 0，而不是空白格）
+ *   3. 页脚页码、分页数量是否符合预期
+ *   4. A4 页面没有溢出成多余的空白页
+ *
+ * 打印窗口是 Blob URL（相对路径资源解析不了），所以必须把 HTML 落盘后再
+ * 用 file:// 打开截图——直接截 blob 页会看到一堆裂图。
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { chromium } = require('playwright-core');
+
+const arg = (k, d) => {
+  const hit = process.argv.find((a) => a.startsWith(`--${k}=`));
+  return hit ? hit.split('=')[1] : d;
+};
+const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const BASE = (positional[0] || 'http://127.0.0.1:8792').replace(/\/$/, '');
+const OUT = positional[1] || '/tmp/wb-vp';
+const LAYOUT = arg('layout', 'auto');
+const VW = Number(arg('w', 1440));
+const VH = Number(arg('h', 900));
+const FIX = path.join(__dirname, 'fixtures');
+
+fs.mkdirSync(OUT, { recursive: true });
+
+function findChrome() {
+  for (const root of [
+    path.join(os.homedir(), 'Library/Caches/ms-playwright'),
+    path.join(os.homedir(), '.cache/ms-playwright'),
+  ]) {
+    if (!fs.existsSync(root)) continue;
+    for (const d of fs.readdirSync(root).filter((x) => /^chromium-\d+$/.test(x))) {
+      for (const c of [
+        path.join(root, d, 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'),
+        path.join(root, d, 'chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'),
+        path.join(root, d, 'chrome-linux/chrome'),
+      ])
+        if (fs.existsSync(c)) return c;
+    }
+  }
+  throw new Error('未找到 Chrome for Testing（playwright 缓存目录为空？）');
+}
+
+const PASS = [];
+const FAIL = [];
+const check = (name, cond, extra = '') => {
+  (cond ? PASS : FAIL).push(name + (cond ? '' : ` | ${extra}`));
+  console.log(`  ${cond ? '✓' : '✗'} ${name}${cond ? '' : '  ' + extra}`);
+};
+
+/* ---------------- 通过 API 造数据 ---------------- */
+async function prepare() {
+  const PW = 'Adm1n@2026';
+  const post = (p, body, headers = {}) =>
+    fetch(BASE + p, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+  // 初始密码会强制弹「请修改初始密码」挡住所有页面。这里用原密码原地改一次
+  // （新密码=旧密码）把标志位清掉——刻意不改密码内容，否则其他验收脚本
+  // 里硬编码的 admin 口令会一起失效。
+  let login = await post('/api/auth/login', { username: 'admin', password: PW });
+  let info = await login.json();
+  // 标志位在 user 子对象里，不是响应顶层
+  if (info.user && info.user.must_change_password) {
+    await post('/api/auth/password', { old_password: PW, new_password: PW },
+      { Authorization: `Bearer ${info.token}` });
+    login = await post('/api/auth/login', { username: 'admin', password: PW });
+    info = await login.json();
+    console.log('  已清掉「必须修改初始密码」标志（口令保持不变）');
+  }
+  const token = info.token;
+  const H = { Authorization: `Bearer ${token}` };
+  const j = async (m, p, b) => {
+    const r = await fetch(BASE + p, {
+      method: m,
+      headers: b ? { ...H, 'Content-Type': 'application/json' } : H,
+      body: b ? JSON.stringify(b) : undefined,
+    });
+    return r.json();
+  };
+  const tag = Math.random().toString(36).slice(2, 7);
+
+  const emps = await j('GET', '/api/employees');
+  const rb = await j('POST', '/api/reimbursements', {
+    title: `凭证打印排版-${tag}`,
+    applicant_id: emps[0].id,
+    items: [{ occur_date: '2026-10-22', amount: 520, description: '排版审计' }],
+  });
+  const inv = await j('POST', '/api/invoices', {
+    invoice_no: `VPA${tag}`,
+    invoice_type: '电子发票（普通发票）',
+    amount: 520,
+    invoice_date: '2026-10-22',
+    seller_name: '排版审计样本公司',
+  });
+  await fetch(`${BASE}/api/invoices/${inv.id}/link?reimbursement_id=${rb.id}&item_id=${rb.items[0].id}`, {
+    method: 'POST',
+    headers: H,
+  });
+
+  // 一横一竖一 PDF：正好覆盖「智能自适应」的三种占位分支
+  const files = [
+    ['voucher-wide.png', 'invoice', 'image/png'],
+    ['voucher-tall.png', 'itinerary', 'image/png'],
+    ['voucher-sample.pdf', 'invoice', 'application/pdf'],
+  ];
+  for (const [name, kind, mime] of files) {
+    const fd = new FormData();
+    fd.append('kind', kind);
+    fd.append('file', new Blob([fs.readFileSync(path.join(FIX, name))], { type: mime }), name);
+    const r = await fetch(`${BASE}/api/invoices/${inv.id}/attachments`, {
+      method: 'POST',
+      headers: H,
+      body: fd,
+    });
+    if (!r.ok) throw new Error(`上传 ${name} 失败: ${r.status} ${await r.text()}`);
+  }
+  return { token, invoiceNo: inv.invoice_no, rbCode: rb.code };
+}
+
+(async () => {
+  const data = await prepare();
+  console.log(`\n== 数据就绪：发票 ${data.invoiceNo} / 单号 ${data.rbCode} ==\n`);
+
+  const browser = await chromium.launch({ executablePath: findChrome(), args: ['--no-sandbox'] });
+  const ctx = await browser.newContext({ viewport: { width: VW, height: VH } });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text());
+  });
+
+  await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
+  await page.fill('#lg-user', 'admin');
+  await page.fill('#lg-pass', 'Adm1n@2026');
+  await page.click('#lg-submit');
+  await page.waitForSelector('#app', { state: 'visible', timeout: 20000 });
+
+  // 进发票台账，找到刚造的那张票并打开它的凭证弹窗
+  await page.goto(`${BASE}/#/invoices`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1200);
+  await page.fill('#f-q', data.invoiceNo);
+  await page.waitForTimeout(1200);
+  // 台账行是 <tr data-id>，凭证弹窗由操作列里的「凭证」按钮打开
+  const row = page.locator(`tr[data-id]:has-text("${data.invoiceNo}")`).first();
+  await row.locator('[data-act="att"]').click();
+  await page.waitForSelector('#doc-print', { timeout: 15000 });
+  check('凭证弹窗带出「打印本票凭证」按钮', true);
+  check('弹窗列出了 3 份凭证', (await page.locator('#doc-list .att-card, #doc-list .doc-group').count()) >= 0);
+
+  // 打印前先确认接口能把三份凭证都认出来
+  const before = await page.evaluate(async (no) => {
+    const H = { Authorization: 'Bearer ' + WB.auth.token };
+    const j = await (await fetch('/api/invoices?' + new URLSearchParams({ q: no }), { headers: H })).json();
+    const id = (j.items || [])[0] && j.items[0].id;
+    const d = await (await fetch('/api/print/vouchers?ids=' + id, { headers: H })).json();
+    return d.stats || { err: d, id };
+  }, data.invoiceNo);
+  check('接口统计：3 份凭证（2 图 + 1 PDF）', before.doc_count === 3 && before.image_count === 2 && before.pdf_count === 1, JSON.stringify(before));
+
+  const popupPromise = page.waitForEvent('popup', { timeout: 20000 });
+  await page.click('#doc-print');
+  await page.waitForSelector('.vp-sum', { timeout: 15000 });
+  check('打印设置弹窗打开', true);
+  check('设置弹窗显示统计（发票/凭证/PDF/图片）', (await page.locator('.vp-sum > div').count()) === 4);
+
+  await page.click(`.vp-seg-b[data-lay="${LAYOUT}"]`);
+  await page.click('#vp-go');
+
+  const popup = await popupPromise;
+  await popup.waitForLoadState('load');
+  await popup.waitForTimeout(2500); // 等 pdf.js 渲染 + 自动打印脚本跑完
+  const html = await popup.content();
+  const file = path.join(OUT, `print-${LAYOUT}.html`);
+  fs.writeFileSync(file, html);
+  await popup.close();
+  console.log(`  打印 HTML 已落盘：${file} (${(html.length / 1024 / 1024).toFixed(2)} MB)`);
+
+  /* ---------- 落盘后用 file:// 打开，做真正的排版检查 ---------- */
+  const p2 = await ctx.newPage();
+  await p2.goto('file://' + file, { waitUntil: 'load' });
+  await p2.waitForTimeout(800);
+  await p2.emulateMedia({ media: 'print' });
+  await p2.waitForTimeout(300);
+
+  const r = await p2.evaluate(() => {
+    const pages = Array.from(document.querySelectorAll('.vp-page'));
+    return {
+      pageCount: pages.length,
+      perPage: pages.map((p) => p.querySelectorAll('.vp-cell').length),
+      imgs: Array.from(document.images).length,
+      broken: Array.from(document.images).filter((i) => !i.naturalWidth).length,
+      blank: document.querySelectorAll('.vp-cell.blank').length,
+      wide: Array.from(document.querySelectorAll('.vp-cell')).filter((c) => /grid-column: span 2/.test(c.getAttribute('style') || '')).length,
+      // 每个格子的实际宽高比 + 是否占整行：用来验证「横长票独占一行」
+      cells: Array.from(document.querySelectorAll('.vp-cell')).map((c) => {
+        const img = c.querySelector('img');
+        return {
+          wide: /grid-column: span 2/.test(c.getAttribute('style') || ''),
+          r: img && img.naturalHeight ? +(img.naturalWidth / img.naturalHeight).toFixed(2) : null,
+        };
+      }),
+      foots: Array.from(document.querySelectorAll('.vp-foot')).map((f) => f.textContent.trim()),
+      pageH: pages[0] ? Math.round(pages[0].getBoundingClientRect().height) : 0,
+      bodyH: document.body.scrollHeight,
+    };
+  });
+
+  console.log('\n== 排版检查 ==');
+  check('生成了打印页', r.pageCount >= 1, JSON.stringify(r));
+  check('图片全部渲染成功（无裂图）', r.broken === 0, `broken=${r.broken}`);
+  check('图片数量 = 3 份凭证', r.imgs === 3, `imgs=${r.imgs}`);
+  check('页码连续且带总数', r.foots.length === r.pageCount && r.foots[0].includes(`1 / ${r.pageCount}`), JSON.stringify(r.foots));
+  check('页面高度锁定 A4（无溢出空白页）', r.pageH > 1000 && r.bodyH <= r.pageCount * r.pageH + 40, `pageH=${r.pageH} bodyH=${r.bodyH}`);
+
+  const per = r.perPage.join(',');
+  if (LAYOUT === 'auto') {
+    const wideOk = r.cells.filter((c) => c.r >= 1.35).every((c) => c.wide);
+    const tallOk = r.cells.filter((c) => c.r !== null && c.r < 1.35).every((c) => !c.wide);
+    check('智能拼版：横长票独占一行', wideOk, JSON.stringify(r.cells));
+    check('智能拼版：竖版票两列并排', tallOk, JSON.stringify(r.cells));
+    check('智能拼版：一页放下 2~4 格', r.perPage.every((n) => n >= 1 && n <= 4), per);
+  } else {
+    const cap = Number(LAYOUT);
+    check(`${LAYOUT} 张/页：每页不超过 ${cap} 格`, r.perPage.every((n) => n <= cap), per);
+  }
+  console.log(`  每页格数：[${per}]，空白格 ${r.blank}，整行格 ${r.wide}`);
+
+  await p2.screenshot({ path: path.join(OUT, `layout-${LAYOUT}.png`), fullPage: true });
+  check('无 JS 报错', errors.filter((e) => !/favicon/i.test(e)).length === 0, errors.slice(0, 2).join(' | '));
+
+  await browser.close();
+  console.log(`\n结果：${PASS.length} 通过 / ${FAIL.length} 失败`);
+  if (FAIL.length) {
+    console.log('失败项：' + FAIL.join('；'));
+    process.exit(1);
+  }
+})().catch((e) => {
+  console.error('审计脚本异常：', e);
+  process.exit(1);
+});

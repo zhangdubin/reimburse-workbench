@@ -47,6 +47,7 @@ from .routers import (
     master,
     jev_config,
     print_qr,
+    print_voucher,
     reimbursements,
     scan,
     stats,
@@ -56,7 +57,7 @@ from .routers import (
 from .seed import ensure_seed
 
 APP_NAME = "销售费用报销管理工作台"
-APP_VERSION = "2.9.28"
+APP_VERSION = "2.9.29"
 
 FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", Path(__file__).resolve().parents[2] / "frontend"))
 
@@ -347,6 +348,7 @@ app.include_router(inbox.router)
 app.include_router(ai_router.router)
 app.include_router(stats.router)
 app.include_router(print_qr.router)
+app.include_router(print_voucher.router)
 app.include_router(jev_config.router)
 app.include_router(scan.router)
 app.include_router(sso.router)

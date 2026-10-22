@@ -371,9 +371,13 @@ WB.views = WB.views || {};
         </div>` : ''}
         <div id="doc-hint"></div>
         <div id="doc-list"><div class="empty"><span class="spin"></span>加载中…</div></div>`,
-      footer: `<button class="btn" data-close>关闭</button>`,
+      footer: `<button class="btn" data-close>关闭</button>
+        <button class="btn btn-primary" id="doc-print">打印本票凭证</button>`,
       onMount(apiMod) {
         const listEl = U.qs('#doc-list', apiMod.el);
+        // 单张发票的凭证打印：与列表/报销单入口共用一套排版与设置
+        U.qs('#doc-print', apiMod.el).onclick = () =>
+          WB.voucherPrint.open({ invoiceIds: [inv.id] });
         const hintEl = U.qs('#doc-hint', apiMod.el);
         let list = [];
 
@@ -1381,6 +1385,7 @@ WB.views = WB.views || {};
         <button class="btn btn-sm" id="f-reset">重置</button>
         <div class="spacer"></div>
         <button class="btn btn-sm" id="btn-print">打印清单</button>
+        <button class="btn btn-sm" id="btn-vprint" title="把发票影像与随票凭证按 A4 拼版打出，剪下即可贴票">打印凭证</button>
         ${WB.can('invoice.write') ? '<button class="btn btn-sm" id="btn-batch">批量查验</button>' : ''}
         <button class="btn btn-sm" id="btn-export">导出 CSV</button>
         ${WB.can('invoice.write') ? '<button class="btn btn-sm" id="btn-batch-new">批量登记</button><button class="btn btn-sm btn-primary" id="btn-new">+ 登记发票</button>' : ''}`
@@ -1467,6 +1472,18 @@ WB.views = WB.views || {};
           if (!rows.length) return U.toast('当前没有可打印的发票', 'warn');
           const where = checked.size ? `勾选 ${rows.length} 张` : `当前筛选结果 ${rows.length} 张（第 ${state.page} 页）`;
           WB.print.invoices(rows, where);
+        };
+        // 凭证打印：与「打印清单」同一套勾选口径（勾了打勾选的，否则打当前页）
+        U.qs('#btn-vprint', tb).onclick = () => {
+          const checked = new Set(
+            U.qsa('.ck-row', bodyHost).filter((c) => c.checked).map((c) => Number(c.value))
+          );
+          const rows = checked.size ? lastRows.filter((v) => checked.has(Number(v.id))) : lastRows;
+          if (!rows.length) return U.toast('当前没有可打印的发票', 'warn');
+          WB.voucherPrint.open({
+            invoiceIds: rows.map((v) => v.id),
+            count: rows.length,
+          });
         };
       },
     };

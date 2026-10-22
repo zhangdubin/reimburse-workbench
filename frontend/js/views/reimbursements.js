@@ -429,6 +429,9 @@ WB.views = WB.views || {};
       footer: `
         ${d.status === '已驳回' ? `<button class="btn" data-act="edit">编辑重提</button>` : ''}
         <button class="btn" data-act="print">打印</button>
+        ${(d.invoices || []).length
+          ? `<button class="btn" data-act="vprint" title="把本单发票与随票凭证按 A4 拼版打出，剪下即可贴票">打印凭证</button>`
+          : ''}
         ${canApprove ? `<button class="btn btn-danger" data-act="reject">驳回</button>
           <button class="btn btn-success" data-act="approve">审批通过</button>` : ''}
         ${canPay ? `<button class="btn btn-primary" data-act="pay">确认付款</button>` : ''}
@@ -488,6 +491,8 @@ WB.views = WB.views || {};
               return openEditor(d, meta, reload);
             }
             if (act === 'print') return WB.print.reimbursement(d);
+            if (act === 'vprint')
+              return WB.voucherPrint.open({ reimbursementId: d.id });
             if (act === 'reject') {
               const comment = await askComment('驳回原因', '该笔费用超出部门月度预算，请补充审批说明');
               if (comment === null) return;
