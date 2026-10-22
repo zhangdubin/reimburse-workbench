@@ -219,7 +219,7 @@ window.WB = window.WB || {};
     aiActions: () => api.get('/api/ai/actions'),
 
     /* 数据备份（admin） */
-    backupStatus: () => api.get('/api/admin/backup/status'),
+    backupStatus: (refresh) => api.get('/api/admin/backup/status', refresh ? { refresh: 1 } : null),
     backupList: (which) => api.get('/api/admin/backup/list', which ? { which } : null),
     backupRun: () => api.post('/api/admin/backup/run', {}),
     backupPrune: () => api.post('/api/admin/backup/prune', {}),
@@ -230,8 +230,11 @@ window.WB = window.WB || {};
       return raw('POST', '/api/admin/backup/upload-restore?confirm=true', { body: fd }).then((r) => r.json());
     },
     backupSetConfig: (key, value) => api.put(`/api/admin/backup/config/${encodeURIComponent(key)}`, { value }),
+    backupSetConfigBatch: (values) => api.put('/api/admin/backup/config', { values }),
     backupDelConfig: (key) => api.del(`/api/admin/backup/config/${encodeURIComponent(key)}`),
     backupDownloadUrl: (name) => `/api/admin/backup/download/${encodeURIComponent(name)}`,
+    /* 一次性下载票据：浏览器原生下载带不上 Authorization 头，靠它走认证 */
+    backupTicket: (name) => api.post('/api/admin/backup/ticket', { name }),
 
     /* 单点登录（v2.9.23）
      * 登录侧三个接口都不带 Authorization —— 那时还没有会话。 */

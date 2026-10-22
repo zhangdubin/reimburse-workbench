@@ -25,6 +25,7 @@ import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -127,6 +128,196 @@ def _resolved_paths(db: Session) -> tuple[Path, Path | None, int, int, float, bo
     interval = float(s.get("backup_interval_hours") or BACKUP_INTERVAL_HOURS)
     at_boot = (s.get("backup_at_boot") or ("1" if BACKUP_AT_BOOT else "0")) == "1"
     return bd, rd, keep_l, keep_r, interval, at_boot
+
+
+# ---------------------------------------------------------------------------
+# 存储位置可视化（v2.9.28+）
+#
+# 备份包落在**容器内**路径（默认 /app/data/backups），管理员在界面上看到这个路径
+# 根本找不到文件——因为容器路径与宿主路径是两回事（未挂载时甚至只在容器可写层里，
+# 重建容器就没了）。这里通过 Docker Engine API 反查「我自己这个容器」的挂载表，
+# 把容器路径翻译成宿主路径，界面上就能直接给出可复制的真实位置与 docker cp 命令。
+# 查不到（没挂 socket / 不在容器里 / 目录没挂载）时返回 reason，由前端给出对应提示，
+# 绝不静默失败。
+# ---------------------------------------------------------------------------
+
+_MOUNTS_CACHE: dict = {"ts": 0.0, "mounts": None}
+MOUNTS_TTL_SEC = 60.0
+
+
+def _self_container_id() -> str:
+    """拿到「我自己」的容器标识。
+
+    Docker 默认把容器 ID 前 12 位设成 hostname；compose 若显式设了 hostname，
+    那它通常也等于容器名，Docker API 同样认。两种情况都能查到。
+    """
+    cid = (os.getenv("HOSTNAME") or "").strip()
+    if not cid:
+        try:
+            cid = socket.gethostname()
+        except Exception:  # noqa: BLE001
+            cid = ""
+    return cid
+
+
+def _self_mounts(force: bool = False) -> list[dict] | None:
+    """自身容器的挂载表（Type/Source/Destination/Name），结果缓存 60 秒。
+
+    返回 None 表示拿不到（未挂载 docker.sock / 不在容器里 / 权限不足），
+    调用方据此降级，不要当成「没有挂载」。
+    """
+    now = time.time()
+    if not force and _MOUNTS_CACHE["ts"] and now - _MOUNTS_CACHE["ts"] < MOUNTS_TTL_SEC:
+        return _MOUNTS_CACHE["mounts"]
+
+    mounts: list[dict] | None = None
+    try:
+        from . import docker_api
+
+        ok, _msg = docker_api.available()
+        if not ok:
+            mounts = None
+        else:
+            cid = _self_container_id()
+            data = None
+            if cid:
+                try:
+                    data = json.loads(
+                        docker_api.request("GET", f"/containers/{cid}/json", timeout=8).decode("utf-8")
+                    )
+                except Exception:  # noqa: BLE001
+                    data = None
+            if data is None:
+                # hostname 不是 ID 时退化成列表比对：ID 前缀命中或名字命中
+                lst = json.loads(
+                    docker_api.request("GET", "/containers/json?all=1", timeout=10).decode("utf-8")
+                )
+                for c in lst or []:
+                    names = [str(n).lstrip("/") for n in (c.get("Names") or [])]
+                    if cid and (str(c.get("Id", "")).startswith(cid) or cid in names):
+                        data = c
+                        break
+                if data is not None and data.get("Id"):
+                    data = json.loads(
+                        docker_api.request("GET", f"/containers/{data['Id']}/json", timeout=8).decode("utf-8")
+                    )
+            if data:
+                mounts = data.get("Mounts") or []
+    except Exception:  # noqa: BLE001
+        mounts = None
+
+    _MOUNTS_CACHE["ts"] = now
+    _MOUNTS_CACHE["mounts"] = mounts
+    return mounts
+
+
+def host_path_for(container_path: str | Path, *, force: bool = False) -> dict:
+    """把容器内路径翻译成宿主路径（能翻译就翻译，不能就说明原因）。
+
+    返回：{container_path, host_path, host_visible, mount_type, volume, reason}
+      host_visible=True  → 宿主上真能 cd 进去（bind 挂载，或 Linux 宿主上的具名卷）
+      reason: docker_unavailable / not_mounted / 空
+    """
+    try:
+        p = str(Path(str(container_path)).resolve())
+    except Exception:  # noqa: BLE001
+        p = str(container_path)
+
+    out: dict = {
+        "container_path": p,
+        "host_path": None,
+        "host_visible": False,
+        "mount_type": None,
+        "volume": None,
+        "reason": None,
+    }
+    mounts = _self_mounts(force=force)
+    if mounts is None:
+        out["reason"] = "docker_unavailable"
+        return out
+
+    best: dict | None = None
+    for mo in mounts:
+        dest = str(mo.get("Destination") or "")
+        if not dest:
+            continue
+        if p == dest or p.startswith(dest.rstrip("/") + "/"):
+            if best is None or len(dest) > len(str(best.get("Destination") or "")):
+                best = mo
+    if best is None:
+        out["reason"] = "not_mounted"
+        return out
+
+    dest = str(best.get("Destination") or "")
+    src = str(best.get("Source") or "")
+    rel = p[len(dest):].strip("/")
+    typ = str(best.get("Type") or "")
+    out["mount_type"] = typ or None
+    out["volume"] = best.get("Name")
+    full = str(Path(src) / rel) if (src and rel) else (src or None)
+    out["host_path"] = full
+    # bind 挂载 = 宿主真实目录；具名卷在 Linux 宿主上是 /var/lib/docker/volumes/.../_data，
+    # 同样真实可访问。Docker Desktop（macOS/Windows）的卷在虚拟机里，宿主看不到，
+    # 但那种场景基本都是单机试用，给出路径 + docker cp 命令已足够。
+    out["host_visible"] = bool(full) and typ in ("bind", "volume")
+    return out
+
+
+def dir_stats(path: Path | None) -> dict:
+    """备份目录的实况：存在性、可写性、剩余空间、已有备份占用。"""
+    info: dict = {
+        "configured": bool(path),
+        "path": str(path) if path else "",
+        "exists": False,
+        "writable": False,
+        "free": None,
+        "total": None,
+        "files": 0,
+        "bytes": 0,
+    }
+    if not path:
+        return info
+    try:
+        info["exists"] = path.exists()
+        if path.exists():
+            info["writable"] = os.access(str(path), os.W_OK)
+            try:
+                usage = shutil.disk_usage(str(path))
+                info["free"] = int(usage.free)
+                info["total"] = int(usage.total)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                files = list(path.glob("reimburse_*.tar.gz"))
+                info["files"] = len(files)
+                info["bytes"] = int(sum(f.stat().st_size for f in files))
+            except OSError:
+                pass
+    except Exception as exc:  # noqa: BLE001
+        info["error"] = f"{type(exc).__name__}: {exc}"
+    return info
+
+
+def storage_view(db: Session, *, force: bool = False) -> dict:
+    """给界面用的存储快照：本地 + 外挂，各自带宿主路径与空间实况。"""
+    bd, rd, *_ = _resolved_paths(db)
+    local = dir_stats(bd)
+    local.update(host_path_for(bd, force=force))
+    remote = dir_stats(rd)
+    if rd:
+        remote.update(host_path_for(rd, force=force))
+    return {"local": local, "remote": remote}
+
+
+def copy_command(container_path: str | Path, host_dest: str = "./") -> str:
+    """给管理员一条能直接粘贴执行的取包命令（宿主上看不到目录时的兜底）。"""
+    try:
+        from . import docker_api
+        cid = _self_container_id()
+    except Exception:  # noqa: BLE001
+        cid = ""
+    name = os.getenv("APP_CONTAINER") or (cid[:12] if cid else "<容器名>")
+    return f"docker cp {name}:{container_path} {host_dest}"
 
 
 def _timestamp() -> str:
@@ -361,6 +552,12 @@ def do_backup(db: Session, *, label: str = "manual") -> BackupResult:
             raise RuntimeError(f"打包后大小 {size} 字节 超过阈值")
 
         sha = _sha256_file(final)
+        # 摘要落一份 sidecar：下载接口就不必再为几个 GB 的包重算一遍（大包算摘要要十几秒，
+        # 反向代理常常就在这十几秒里超时，表现成「点击下载报 HTTP 错误」）。
+        try:
+            (bd / (name + ".sha256")).write_text(sha + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
         # 6) 计数 uploads 文件数（从 tar 字节解析出 entries）
         # 不走 tarfile.open() 是因为某些沙箱环境会拦截 BytesIO 的打开；
@@ -395,7 +592,17 @@ def do_backup(db: Session, *, label: str = "manual") -> BackupResult:
             elapsed_seconds=elapsed, uploaded_files=upload_count,
             table_rows=db_rows, remote_path=remote_path, remote_error=remote_err,
         )
-        _write_last_result(db, result.to_dict())
+        payload = result.to_dict()
+        # 顺手把宿主可访问位置一起落进去，界面「最近一次备份」就能给出真实路径
+        try:
+            hp = host_path_for(bd)
+            payload["host_path"] = str(Path(hp["host_path"]) / name) if hp.get("host_path") else ""
+            payload["host_visible"] = bool(hp.get("host_visible"))
+            payload["mount_type"] = hp.get("mount_type")
+            payload["copy_command"] = copy_command(str(final))
+        except Exception:  # noqa: BLE001
+            pass
+        _write_last_result(db, payload)
         return result
     except Exception as exc:
         # 任何阶段失败都把信息落 setting，让前端能看到上次失败原因
@@ -431,10 +638,36 @@ def _write_last_result(db: Session, payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def list_backups(db: Session, *, which: str = "both") -> list[dict]:
+def sha256_cached(p: Path) -> str:
+    """读 sidecar 里的摘要；没有就返回空串（绝不为了填个字段去读整包）。"""
+    try:
+        side = Path(str(p) + ".sha256")
+        if side.exists():
+            v = side.read_text(encoding="utf-8").strip().split()[0]
+            if len(v) == 64:
+                return v
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def list_backups(db: Session, *, which: str = "both", with_host_path: bool = True) -> list[dict]:
     """列出本地与外挂备份包，按 mtime 倒序。which: local|remote|both。"""
     bd, rd, *_ = _resolved_paths(db)
     out: list[dict] = []
+    # 宿主路径按目录算一次即可（每条都去查 docker 会把页面拖慢）
+    host_map: dict[str, dict] = {}
+    if with_host_path:
+        for root in (bd, rd):
+            if root:
+                host_map[str(root)] = host_path_for(root)
+    else:
+        host_map = {}
+
+    def _host_of(root: Path, name: str) -> str:
+        info = host_map.get(str(root)) or {}
+        hp = info.get("host_path")
+        return str(Path(hp) / name) if hp else ""
 
     def _scan(root: Path, where: str) -> Iterable[dict]:
         if not root or not root.exists():
@@ -446,6 +679,8 @@ def list_backups(db: Session, *, which: str = "both") -> list[dict]:
                     "name": p.name,
                     "where": where,
                     "path": str(p),
+                    "host_path": _host_of(root, p.name),
+                    "sha256": sha256_cached(p),
                     "size": st.st_size,
                     "mtime": int(st.st_mtime),
                     "mtime_iso": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
@@ -479,6 +714,11 @@ def _prune_one(root: Path | None, keep: int) -> int:
         try:
             p.unlink()
             cut += 1
+        except OSError:
+            pass
+        # 摘要 sidecar 跟着一起走，否则老包的 .sha256 会越堆越多
+        try:
+            Path(str(p) + ".sha256").unlink()
         except OSError:
             pass
     return cut

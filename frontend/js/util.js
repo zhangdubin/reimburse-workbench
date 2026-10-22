@@ -205,6 +205,33 @@ window.WB = window.WB || {};
     a.remove();
   };
 
+  /* 复制文本到剪贴板。navigator.clipboard 只在 HTTPS / localhost 下可用，
+   * 内网用 http://ip:port 访问时会直接抛错——所以必须有 execCommand 兜底。 */
+  U.copyText = (text) => {
+    const s = String(text == null ? '' : text);
+    const done = () => U.toast('已复制：' + s, 'success', 1800);
+    const fallback = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = s;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        ok ? done() : U.toast('复制失败，请手动选中复制', 'warn');
+      } catch (_) {
+        U.toast('复制失败，请手动选中复制', 'warn');
+      }
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(s).then(done).catch(fallback);
+    } else {
+      fallback();
+    }
+  };
+
   U.emptyRow = (cols, text = '暂无数据') =>
     `<tr class="empty-row"><td colspan="${cols}"><div class="empty">${U.esc(text)}</div></td></tr>`;
 

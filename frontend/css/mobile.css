@@ -1052,3 +1052,36 @@
   .ug-ctrl .input-unit { width: 100%; max-width: none; }
   .ug-ctrl .input-unit input { flex: 1; width: auto !important; font-size: 16px; }
 }
+
+/* ---- 数据备份页（v2.9.28）：手机上单列铺开，路径可横滑，按钮撑满 ---- */
+@media (max-width: 820px) {
+  .bk-card { padding: var(--sp-4); }
+  .bk-hero { padding: var(--sp-4); }
+  .bk-hero-main { flex-direction: column; gap: var(--sp-4); }
+  .bk-hero-acts { width: 100%; }
+  .bk-hero-acts .btn { flex: 1; min-height: 40px; }
+  .bk-hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bk-store-grid { grid-template-columns: 1fr; }
+  .bk-path { padding: var(--sp-2) var(--sp-3); }
+  .bk-path-l { width: 44px; }
+  .bk-path-v { font-size: var(--fs-xs); }
+  .bk-copy { height: 30px; padding: 0 12px; }
+  .bk-card-h { flex-wrap: wrap; }
+  .bk-list-tools { width: 100%; }
+  .bk-search { flex: 1; min-width: 0; height: 34px; font-size: 16px; }
+  .bk-segs { width: 100%; }
+  .bk-seg { flex: 1; min-width: 72px; text-align: center; }
+  .bk-td-name { min-width: 0; }
+  .bk-nm, .bk-hp code { max-width: 46vw; }
+  .bk-td-act .btn { min-height: 34px; }
+  .bk-input { font-size: 16px; }
+  .bk-step-b { width: 38px; height: 38px; }
+  .bk-step-v { width: 60px; height: 38px; font-size: 16px; }
+  .bk-danger-row { flex-direction: column; align-items: stretch; }
+  .bk-danger-row .btn { min-height: 40px; }
+  /* mobile.css 为卡片式表格（table.tbl）把 .table-wrap 设成了 visible；
+     备份表不走卡片化，容器必须自己横滚，否则整页被撑宽 */
+  .bk-card .table-wrap { overflow-x: auto; }
+  .bk-store { min-width: 0; }
+  .bk-space-txt { flex-wrap: wrap; }
+}
