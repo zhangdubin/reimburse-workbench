@@ -54,6 +54,25 @@ def _default_status() -> dict:
     }
 
 
+def _clear_stale_status(old: dict) -> None:
+    """把过期的失败状态归档：主状态回 idle，旧日志留一份在 log 里可追溯。
+
+    宿主机脚本 / 手工重建容器会把版本直接换掉，升级页那条 failure 没人回来清，
+    就会永久挂着「上次升级未完成」挡住后续升级——版本一旦前进就当它过期。
+    """
+    data = _default_status()
+    log = list(old.get("log") or [])[-LOG_MAX:]
+    data["log"] = (["[%s] 检测到过期的失败记录（版本已前进），状态已重置"
+                    % time.strftime("%H:%M:%S")] + log)[-LOG_MAX:]
+    try:
+        tmp = STATUS_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+        os.replace(tmp, STATUS_PATH)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def read_status() -> dict:
     data = _default_status()
     try:
@@ -65,6 +84,15 @@ def read_status() -> dict:
         pass
     except Exception:  # noqa: BLE001
         pass
+    # 失败记录过期自愈：当前版本已经等于当时的目标版本，或者已经不是那次失败前的
+    # 版本，都说明升级事实上完成了（可能是宿主机脚本 / 手工重建换上去的）
+    if data.get("phase") == "failed":
+        cur = uc.current_version()
+        from_v = (data.get("from_version") or "").strip()
+        target = (data.get("target_version") or "").strip()
+        if (target and cur == target) or (from_v and cur != from_v):
+            _clear_stale_status(data)
+            data = _default_status()
     # 本容器版本已经等于目标版本，说明升级确实成功了
     if data.get("phase") == "switching" and uc.current_version() == data.get("target_version"):
         data["phase"] = "done"

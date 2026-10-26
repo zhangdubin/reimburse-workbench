@@ -311,6 +311,34 @@ def test_status_file():
           "current_version" in st and "docker_ready" in st)
 
 
+def test_stale_failure():
+    """过期的失败状态要自愈：手工/宿主机脚本换过镜像后，没人回来清 status.json，
+    那条「上次升级未完成」会永久挂在升级页挡住后续升级（2.9.31 线上遇到）。"""
+    group("失败状态过期自愈")
+    real_version = uc.current_version
+    try:
+        uc.current_version = lambda: "2.9.31"
+        ur.write_status(phase="failed", ok=False, from_version="2.9.27",
+                        target_version="2.9.31", message="升级未完成",
+                        detail="找不到自身容器")
+        check("已升到目标版本 → 自愈为 idle", ur.read_status().get("phase") == "idle")
+
+        ur.write_status(phase="failed", ok=False, from_version="2.9.27",
+                        target_version="2.9.30", message="升级未完成")
+        check("版本已前进（目标不是当前）→ 自愈为 idle",
+              ur.read_status().get("phase") == "idle")
+
+        ur.write_status(phase="failed", ok=False, from_version="2.9.31",
+                        target_version="2.9.32", message="升级未完成",
+                        detail="真的失败了")
+        st = ur.read_status()
+        check("版本没动 → 真失败必须保留", st.get("phase") == "failed")
+        check("真失败的错误原因不被吞掉", "真的失败了" in (st.get("detail") or ""))
+    finally:
+        uc.current_version = real_version
+        ur.write_status(phase="idle", progress=0.0, message="", detail="")
+
+
 def test_self_container():
     """自身容器识别：HOSTNAME 不可靠时仍要能定位（2.9.27 线上翻车的场景）。"""
     group("自身容器识别")
@@ -415,6 +443,7 @@ def main():
         test_release_parse(db)
         test_release_current(db)
         test_status_file()
+        test_stale_failure()
         test_preflight(db)
         test_self_container()
     finally:

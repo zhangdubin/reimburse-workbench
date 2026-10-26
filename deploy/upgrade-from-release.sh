@@ -33,10 +33,14 @@ die()  { printf '\n%s✘ %s%s\n' "${RED}" "$*" "${OFF}" >&2; exit 1; }
 hint() { printf '  %s%s%s\n' "${DIM}" "$*" "${OFF}"; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 脚本经常是从 /tmp 或骨架包临时目录里跑的，那里没有 compose 文件；
+# 那就把 PROJ_DIR 留空，等下面用容器的 compose 标签反推（别瞎猜成 "/"）
 if [[ -f "${HERE}/docker-compose.yml" ]]; then
   PROJ_DIR="${HERE}"
-else
+elif [[ -f "$(dirname "${HERE}")/docker-compose.yml" ]]; then
   PROJ_DIR="$(dirname "${HERE}")"
+else
+  PROJ_DIR=""
 fi
 
 REPO="zhangdubin/reimburse-workbench"
@@ -85,10 +89,9 @@ sha_of() { # 统一 sha256 输出格式
 
 # ---------- 1. 环境与目标 ----------
 step "环境检查"
-[[ -d "${PROJ_DIR}" ]] || die "安装目录不存在：${PROJ_DIR}"
-ok "安装目录 ${PROJ_DIR}"
 
-if [[ -z "${APP_CONTAINER}" && -f "${PROJ_DIR}/.env" ]]; then
+# 找 app 容器：优先进安装目录的 .env，其次按镜像名匹配
+if [[ -z "${APP_CONTAINER}" && -n "${PROJ_DIR}" && -f "${PROJ_DIR}/.env" ]]; then
   APP_CONTAINER=$(awk -F= '/^APP_CONTAINER=/{print $2}' "${PROJ_DIR}/.env" | tail -1 | tr -d '"'"'"' \r')
 fi
 if [[ -z "${APP_CONTAINER}" ]]; then
@@ -103,26 +106,35 @@ CUR_HOSTNAME=$(docker inspect -f '{{.Config.Hostname}}' "${APP_CONTAINER}")
 COMPOSE_PROJ=$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "${APP_CONTAINER}" 2>/dev/null || true)
 [[ -n "${COMPOSE_PROJ}" && "${COMPOSE_PROJ}" != "<no value>" ]] || COMPOSE_PROJ=""
 COMPOSE_FILE=$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "${APP_CONTAINER}" 2>/dev/null || true)
-[[ -n "${COMPOSE_FILE}" && "${COMPOSE_FILE}" != "<no value>" ]] || COMPOSE_FILE="${PROJ_DIR}/docker-compose.yml"
+[[ -n "${COMPOSE_FILE}" && "${COMPOSE_FILE}" != "<no value>" ]] || COMPOSE_FILE=""
+COMPOSE_WD=$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' "${APP_CONTAINER}" 2>/dev/null || true)
+[[ -n "${COMPOSE_WD}" && "${COMPOSE_WD}" != "<no value>" ]] || COMPOSE_WD=""
 
-# 脚本可能是从临时目录里跑的（比如从骨架包里解出来）——那就用容器自己的
-# compose 配置路径反推真实安装目录，避免把 .env / backups 写错地方
-if [[ "${DIR_GIVEN}" == "0" && -f "${COMPOSE_FILE}" ]]; then
-  REAL_DIR=$(cd "$(dirname "${COMPOSE_FILE}")" && pwd)
-  if [[ "${REAL_DIR}" != "${PROJ_DIR}" ]]; then
-    ok "按容器的 compose 配置定位安装目录：${REAL_DIR}"
-    PROJ_DIR="${REAL_DIR}"
-    COMPOSE_FILE="${PROJ_DIR}/$(basename "${COMPOSE_FILE}")"
-  fi
+# 安装目录三级定位：--dir / 脚本所在 → 容器 compose 配置路径 → compose 工作目录
+# （有些 NAS 面板导入 compose 会把 working_dir 标签丢掉，只有 config_files 还在）
+if [[ -z "${PROJ_DIR}" && -n "${COMPOSE_FILE}" ]]; then
+  CF1="${COMPOSE_FILE%%,*}"          # 可能是逗号分隔的多个文件
+  CF1="${CF1#\"}"; CF1="${CF1%\"}"   # 去掉两边引号
+  [[ -f "${CF1}" ]] && PROJ_DIR="$(cd "$(dirname "${CF1}")" && pwd)"
 fi
+if [[ -z "${PROJ_DIR}" && -n "${COMPOSE_WD}" && -d "${COMPOSE_WD}" ]]; then
+  PROJ_DIR="${COMPOSE_WD}"
+fi
+[[ -n "${COMPOSE_FILE}" ]] || COMPOSE_FILE="${PROJ_DIR:+${PROJ_DIR}/docker-compose.yml}"
+
+[[ -n "${PROJ_DIR}" ]] || die "定位不到安装目录：这个容器没有 compose 标签（docker run / 面板手建的？）。
+  请显式指定安装目录（有 .env 和 docker-compose.yml 的那个），例如：
+    bash $0 --dir /opt/reimburse-workbench --container ${APP_CONTAINER} $*"
+[[ -d "${PROJ_DIR}" ]] || die "安装目录不存在：${PROJ_DIR}"
+ok "安装目录 ${PROJ_DIR}"
+ok "app 容器 ${APP_CONTAINER}（当前镜像 ${CUR_TAG}，容器内 HOSTNAME=${CUR_HOSTNAME}）"
+hint "这一行就是历史上「找不到自身容器」的关键：HOSTNAME 不等于容器名时，老版本升级器会认不出自己"
 
 DB_CONTAINER=$(docker ps --format '{{.Names}}\t{{.Image}}' \
   | awk -F'\t' '$2 ~ /postgres/ {print $1; exit}')
 PORT=$(awk -F= '/^APP_PORT=/{print $2}' "${PROJ_DIR}/.env" 2>/dev/null | tail -1 | tr -d '"'"'"' \r')
 PORT="${PORT:-8080}"
 
-ok "app 容器 ${APP_CONTAINER}（当前镜像 ${CUR_TAG}，容器内 HOSTNAME=${CUR_HOSTNAME}）"
-hint "这一行就是历史上「找不到自身容器」的关键：HOSTNAME 不等于容器名时，老版本升级器会认不出自己"
 [[ -n "${DB_CONTAINER}" ]] && ok "db 容器 ${DB_CONTAINER}" || warn "没找到 postgres 容器，将跳过数据库备份"
 [[ -n "${COMPOSE_PROJ}" ]] && ok "compose 项目 ${COMPOSE_PROJ}" || warn "容器不是 compose 建的？将用目录名当项目名"
 ok "compose 文件 ${COMPOSE_FILE}"
