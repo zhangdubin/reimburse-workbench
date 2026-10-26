@@ -30,5 +30,8 @@ backups/
 data/
 uploads/
 
+# 宿主机兜底升级脚本的临时工作目录（deploy/upgrade-from-release.sh）
+.upgrade-tmp/
+
 # 本地临时覆盖（DNS 脏缓存应急用，勿入仓库）
 docker-compose.override.yml
