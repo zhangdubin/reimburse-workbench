@@ -28,6 +28,7 @@ TARGET_TAG = (os.getenv("UP_TARGET_TAG") or "").strip()
 IMAGE_TAR = (os.getenv("UP_IMAGE_TAR") or "").strip()
 BUNDLE_DIR = (os.getenv("UP_BUNDLE_DIR") or "").strip()
 PROJECT_DIR = (os.getenv("UP_PROJECT_DIR") or "").strip()
+APP_ID = (os.getenv("UP_APP_ID") or "").strip()
 APP_CONTAINER = (os.getenv("UP_APP_CONTAINER") or "").strip()
 DB_CONTAINER = (os.getenv("UP_DB_CONTAINER") or "").strip()
 UPGRADE_DIR = os.getenv("UPGRADE_DIR") or "/app/data/upgrade"
@@ -51,22 +52,40 @@ def _now_tag() -> str:
 
 # ---------- 各步骤 ----------
 
+def _shape(info: dict) -> dict:
+    return {"Id": info.get("Id") or "",
+            "Names": ["/" + (info.get("Name") or "").lstrip("/")]}
+
+
 def _find_app() -> dict:
-    cand = dk.container_find(APP_CONTAINER) if APP_CONTAINER else None
-    if cand:
-        return cand
-    # UP_APP_CONTAINER 传的是容器内 HOSTNAME：compose 未设 hostname 时它是
-    # 12 位短容器 ID（不是容器名）——按名字找不到时按 ID 前缀回退
-    if APP_CONTAINER:
+    # 1) app 侧解析出来的完整 ID 最可靠（名字/主机名都可能被人改过）
+    if APP_ID:
         try:
-            info = dk.container_inspect(APP_CONTAINER)
-            cid = info.get("Id") or ""
-            if cid:
-                names = ["/%s" % (info.get("Name") or "").lstrip("/")]
-                return {"Id": cid, "Names": names}
+            info = dk.container_inspect(APP_ID)
+            if info.get("Id"):
+                return _shape(info)
+        except Exception:  # noqa: BLE001
+            append_log("按容器 ID %s 没找到，改用名字定位" % APP_ID[:12])
+    if APP_CONTAINER:
+        cand = dk.container_find(APP_CONTAINER)
+        if cand:
+            return cand
+        try:
+            info = dk.container_inspect(APP_CONTAINER)   # 短 ID / 名字都接受
+            if info.get("Id"):
+                return _shape(info)
         except Exception:  # noqa: BLE001
             pass
-    raise RuntimeError("找不到应用容器 %s" % (APP_CONTAINER or "(未传名字)"))
+        # 兜底：HOSTNAME 可能是自定义 hostname（既不是名字也不是 ID），
+        # 那就扫一遍对比 Config.Hostname
+        try:
+            for item in dk.container_list(all_=True):
+                cid = item.get("Id") or ""
+                if dk.container_hostname(cid) == APP_CONTAINER:
+                    return item
+        except Exception:  # noqa: BLE001
+            pass
+    raise RuntimeError("找不到应用容器 %s（ID=%s）" % (APP_CONTAINER or "(未传名字)", APP_ID[:12] or "-"))
 
 
 def _backup_db() -> str:

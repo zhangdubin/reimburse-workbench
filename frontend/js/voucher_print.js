@@ -17,7 +17,7 @@
   'use strict';
 
   const U = WB.util;
-  const V = '2.9.30';                 // 与 index.html 的 ?v= 一致，改版要同步
+  const V = '2.9.31';                 // 与 index.html 的 ?v= 一致，改版要同步
   const PDF_MAX_PAGES = 5;            // 单份 PDF 最多渲染页数（防超大文件把内存吃干）
   const WIDE_RATIO = 1.35;            // 宽高比 ≥ 此值按「横长票」处理，独占一行
 

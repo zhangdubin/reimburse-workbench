@@ -225,6 +225,14 @@ def container_find(name: str) -> dict | None:
     return None
 
 
+def container_list(all_: bool = True) -> list:
+    """列容器（默认含已停止的）。升级时用来反查「我是谁」。"""
+    data = json.loads(
+        request("GET", "/containers/json?all=%d" % (1 if all_ else 0), timeout=20).decode("utf-8")
+    )
+    return data or []
+
+
 def container_inspect(cid: str) -> dict:
     return json.loads(request("GET", "/containers/%s/json" % cid, timeout=20).decode("utf-8"))
 
@@ -371,6 +379,30 @@ def container_name(cid: str) -> str:
         return (container_inspect(cid).get("Name") or "").strip("/")
     except Exception:  # noqa: BLE001
         return ""
+
+
+def container_hostname(cid: str) -> str:
+    """容器内的 HOSTNAME（= Config.Hostname）。
+
+    compose 没设 hostname 时它就是 12 位短容器 ID；设了自定义 hostname 时
+    它是那个自定义值——正是「HOSTNAME 既不是容器名也不是 ID」场景的识别依据。
+    """
+    try:
+        info = container_inspect(cid)
+    except Exception:  # noqa: BLE001
+        return ""
+    return ((info.get("Config") or {}).get("Hostname") or "").strip()
+
+
+def container_ips(item: dict) -> set:
+    """从 /containers/json 的一行里取所有网络 IP（bridge / 自定义网络都算）。"""
+    nets = ((item.get("NetworkSettings") or {}).get("Networks") or {})
+    out = set()
+    for net in nets.values():
+        ip = (net or {}).get("IPAddress") or ""
+        if ip:
+            out.add(ip)
+    return out
 
 
 def container_image(cid: str) -> str:

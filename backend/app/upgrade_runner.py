@@ -17,6 +17,7 @@ import json
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -248,22 +249,121 @@ def preflight(db=None) -> list:
 
 # ---------- 从自身容器推断挂载 ----------
 
-def _self_container() -> dict | None:
-    me = os.getenv("HOSTNAME") or ""
-    if not me:
-        return None
-    c = dk.container_find(me)
-    if c:
-        return c
-    # compose 默认不设 hostname，容器里 HOSTNAME 是 12 位短容器 ID——
-    # 按名字找不到时按 ID 前缀回退（docker inspect 接受短 ID），否则一键升级恒失败
+_SELF_DIAG: list[str] = []
+
+
+def _my_ips() -> set:
+    """本进程的容器内 IP：用 UDP「连一下」取默认出口地址，再叠加 DNS 结果。"""
+    ips = set()
     try:
-        info = dk.container_inspect(me)
-        cid = info.get("Id") or ""
-        if cid:
-            return {"Id": cid}
-    except Exception:  # noqa: BLE001
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))       # 不真发包，只让内核选路由
+            ips.add(s.getsockname()[0])
+        finally:
+            s.close()
+    except OSError:
         pass
+    try:
+        for fam, _, _, _, sa in socket.getaddrinfo(socket.gethostname(), None):
+            if fam == socket.AF_INET and sa and sa[0]:
+                ips.add(sa[0])
+    except OSError:
+        pass
+    ips.discard("127.0.0.1")
+    return {ip for ip in ips if ip}
+
+
+def _by_id(cid: str) -> dict | None:
+    try:
+        info = dk.container_inspect(cid)
+    except Exception:  # noqa: BLE001
+        return None
+    real = info.get("Id") or ""
+    if not real:
+        return None
+    return {"Id": real, "Names": ["/" + (info.get("Name") or "").lstrip("/")]}
+
+
+def _self_container() -> dict | None:
+    """定位「我」这个容器。找不到就别谈升级——重建对象都不确定。
+
+    踩过的坑（2.9.27 用户在服务器上就是这么挂的）：
+      早期只认 HOSTNAME：先当容器名精确匹配，再当短 ID inspect。
+      但只要有人给容器设了 hostname（`docker run --hostname` /
+      compose `hostname:` / 某些 NAS 面板的容器向导），HOSTNAME 就
+      既不是容器名也不是 ID，两条路一起落空 → 升级永远卡在交接前。
+
+    所以现在按「便宜→贵」逐级识别，任一步命中即返回：
+      1) SELF_CONTAINER 环境变量（compose 已默认注入，运维也可手工指定）
+      2) HOSTNAME 当容器名 / 当 ID
+      3) 扫一遍容器，比对 Config.Hostname == HOSTNAME
+      4) 比对容器网络 IP 与本进程 IP（与命名完全无关，最可靠的兜底）
+      5) 只有一个「本产品镜像 + compose service=app」的容器时认定就是它
+    """
+    del _SELF_DIAG[:]
+    host = (os.getenv("HOSTNAME") or "").strip()
+    explicit = (os.getenv("SELF_CONTAINER") or "").strip()
+
+    if explicit:
+        for probe in (lambda: dk.container_find(explicit), lambda: _by_id(explicit)):
+            try:
+                c = probe()
+            except Exception:  # noqa: BLE001
+                c = None
+            if c:
+                return c
+        _SELF_DIAG.append("SELF_CONTAINER=%s 没命中" % explicit)
+
+    if host:
+        for probe in (lambda: dk.container_find(host), lambda: _by_id(host)):
+            try:
+                c = probe()
+            except Exception:  # noqa: BLE001
+                c = None
+            if c:
+                return c
+        _SELF_DIAG.append("HOSTNAME=%s 按容器名/短 ID 都没命中" % host)
+    else:
+        _SELF_DIAG.append("容器里没有 HOSTNAME 环境变量")
+
+    try:
+        items = dk.container_list(all_=True)
+    except Exception as exc:  # noqa: BLE001
+        _SELF_DIAG.append("列容器失败：%s" % exc)
+        return None
+    if not items:
+        _SELF_DIAG.append("Docker 里一个容器都没列出来（socket 指向的引擎不对？）")
+        return None
+
+    # 3) Config.Hostname 比对（自定义 hostname 的场景靠这一步）
+    if host:
+        for item in items[:120]:
+            cid = item.get("Id") or ""
+            if dk.container_hostname(cid) == host:
+                return {"Id": cid, "Names": item.get("Names") or ["/" + host]}
+
+    # 4) IP 比对
+    mine = _my_ips()
+    if mine:
+        for item in items:
+            if mine & dk.container_ips(item):
+                return item
+        _SELF_DIAG.append("本机 IP（%s）在所有容器的网络里都对不上" % ",".join(sorted(mine)))
+    else:
+        _SELF_DIAG.append("取不到本机容器 IP")
+
+    # 5) 唯一候选：本产品镜像、或 compose service=app
+    cands = []
+    for item in items:
+        labels = item.get("Labels") or {}
+        image = item.get("Image") or ""
+        if labels.get("com.docker.compose.service") == "app" or "reimburse-workbench" in image:
+            cands.append(item)
+    if len(cands) == 1:
+        _SELF_DIAG.append("按唯一候选命中（镜像/compose 标签推断，建议在 .env 里显式设 APP_CONTAINER）")
+        return cands[0]
+    _SELF_DIAG.append("符合本产品的容器有 %d 个，无法确定是哪一个" % len(cands))
     return None
 
 
@@ -378,6 +478,15 @@ def _start_worker(self_c: dict, target_tag: str, image_tar: str, bundle_ready: b
     if project_dir and os.path.isdir(project_dir):
         binds.append("%s:%s" % (project_dir, project_dir))
 
+    # 交给执行器的必须是「确定的那一个容器」：优先传完整 ID（名字可能被改、也可能本来就不叫它），
+    # 名字只作人类可读的日志线索
+    app_id = self_c.get("Id") or ""
+    app_name = dk.container_name(app_id) if app_id else ""
+    if not app_name:
+        for n in self_c.get("Names") or []:
+            app_name = n.strip("/")
+            break
+
     env = {
         "PATH": "/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "PYTHONUNBUFFERED": "1",
@@ -389,7 +498,8 @@ def _start_worker(self_c: dict, target_tag: str, image_tar: str, bundle_ready: b
         "UP_IMAGE_TAR": image_tar,
         "UP_BUNDLE_DIR": BUNDLE_DIR if bundle_ready else "",
         "UP_PROJECT_DIR": project_dir,
-        "UP_APP_CONTAINER": os.getenv("HOSTNAME", ""),
+        "UP_APP_ID": app_id,
+        "UP_APP_CONTAINER": app_name or os.getenv("HOSTNAME", ""),
         "UP_COMPOSE_PROJECT": labels.get("com.docker.compose.project") or "",
         "UP_COMPOSE_SERVICE": labels.get("com.docker.compose.service") or "app",
         "UP_DB_CONTAINER": _guess_db_container(labels),
@@ -525,7 +635,9 @@ def _worker_thread(db, rel: dict, target: str, asset: dict, bundle_asset: dict, 
 
         self_c = _self_container()
         if not self_c:
-            raise RuntimeError("找不到自身容器（HOSTNAME 与容器名不一致？）")
+            raise RuntimeError("找不到自身容器，无法确定要重建哪个容器（%s）。"
+                               "可在 .env 里把 APP_CONTAINER 设成宿主上 `docker ps` 看到的容器名后重启，再试一次。"
+                               % "；".join(_SELF_DIAG))
 
         write_status(phase="switching", progress=0.95, message="正在交接给升级执行器")
         cid = _start_worker(self_c, target, image_tar, bundle_ready, rel.get("notes") or "")

@@ -311,6 +311,98 @@ def test_status_file():
           "current_version" in st and "docker_ready" in st)
 
 
+def test_self_container():
+    """自身容器识别：HOSTNAME 不可靠时仍要能定位（2.9.27 线上翻车的场景）。"""
+    group("自身容器识别")
+
+    real = (dk.container_find, dk.container_inspect, dk.container_list, dk.container_ips)
+    saved_host = os.environ.get("HOSTNAME")
+    saved_self = os.environ.pop("SELF_CONTAINER", None)
+
+    APP_ID = "a" * 64
+    DB_ID = "b" * 64
+
+    def fake_containers():
+        return [
+            {"Id": APP_ID, "Names": ["/reimburse-workbench-app-1"],
+             "Image": "reimburse-workbench:2.9.30", "Labels": {"com.docker.compose.service": "app"},
+             "NetworkSettings": {"Networks": {"wb": {"IPAddress": "172.20.0.9"}}}},
+            {"Id": DB_ID, "Names": ["/reimburse-db"], "Image": "postgres:16-alpine",
+             "Labels": {"com.docker.compose.service": "db"},
+             "NetworkSettings": {"Networks": {"wb": {"IPAddress": "172.20.0.3"}}}},
+        ]
+
+    details = {
+        APP_ID: {"Id": APP_ID, "Name": "/reimburse-workbench-app-1",
+                 "Config": {"Hostname": "nas-app", "Labels": {"com.docker.compose.service": "app"}}},
+        DB_ID: {"Id": DB_ID, "Name": "/reimburse-db",
+                "Config": {"Hostname": "s" * 12}},
+    }
+
+    def patch(hostname="", names=None, ips=None, find=None):
+        os.environ["HOSTNAME"] = hostname
+        fix = names or {}
+        dk.container_find = lambda n: (find or (lambda x: None))(n) or (
+            next(({"Id": cid, "Names": ["/" + nm]} for cid, nm in fix.items() if nm == n), None))
+        dk.container_inspect = lambda cid: details[cid]
+        dk.container_list = lambda all_=True: fake_containers()
+        dk.container_ips = lambda item: {n["IPAddress"] for n in
+                                        (item.get("NetworkSettings") or {}).get("Networks", {}).values()
+                                        if n.get("IPAddress")}
+        ur._my_ips = lambda: set(ips or [])
+
+    try:
+        # 1) compose 注入的 SELF_CONTAINER 优先（自定义 hostname 也一样能找到）
+        patch(hostname="nas-app")
+        os.environ["SELF_CONTAINER"] = "reimburse-workbench-app-1"
+        got = ur._self_container()
+        check("SELF_CONTAINER 指定容器名可定位", bool(got) and got.get("Id") == APP_ID, str(got))
+        os.environ.pop("SELF_CONTAINER", None)
+
+        # 2) HOSTNAME 就是 12 位短 ID（默认情况）
+        patch(hostname=(APP_ID[:12]), names={})
+        dk.container_inspect = lambda cid: details[APP_ID if cid == APP_ID[:12] else cid]
+        got = ur._self_container()
+        check("HOSTNAME=短 ID 可定位", bool(got) and got.get("Id") == APP_ID, str(got))
+
+        # 3) 自定义 hostname：既不是名字也不是 ID → 靠 Config.Hostname 比对
+        patch(hostname="nas-app")
+        got = ur._self_container()
+        check("自定义 hostname 靠 Config.Hostname 命中", bool(got) and got.get("Id") == APP_ID, str(got))
+
+        # 4) hostname 完全对不上 → 靠 IP 命中
+        details[APP_ID]["Config"]["Hostname"] = "别的名字"
+        patch(hostname="ghost", ips=["172.20.0.9"])
+        got = ur._self_container()
+        check("hostname 失效时靠容器 IP 命中", bool(got) and got.get("Id") == APP_ID, str(got))
+
+        # 5) 名字/主机名/IP 全落空，但只有一个本产品容器 → 唯一候选
+        patch(hostname="ghost", ips=["172.20.0.77"])
+        got = ur._self_container()
+        check("唯一候选兜底命中 app 而不是 db", bool(got) and got.get("Id") == APP_ID, str(got))
+
+        # 6) 两个候选都说不清 → 必须返回 None，且诊断信息说清试过什么
+        fake = fake_containers()
+        fake.append({"Id": "c" * 64, "Names": ["/reimburse-app-stg"],
+                     "Image": "reimburse-workbench:2.9.30", "Labels": {"com.docker.compose.service": "app"},
+                     "NetworkSettings": {"Networks": {"wb": {"IPAddress": "172.20.0.10"}}}})
+        details["c" * 64] = {"Id": "c" * 64, "Name": "/reimburse-app-stg", "Config": {"Hostname": "x" * 12}}
+        patch(hostname="ghost", ips=["172.20.0.77"])
+        dk.container_list = lambda all_=True: fake
+        got = ur._self_container()
+        check("多个候选且无法判断时返回 None", got is None, str(got))
+        check("诊断信息写明尝试过的方式", any("HOSTNAME" in x for x in ur._SELF_DIAG), str(ur._SELF_DIAG))
+    finally:
+        (dk.container_find, dk.container_inspect, dk.container_list, dk.container_ips) = real
+        del ur._my_ips
+        if saved_host is None:
+            os.environ.pop("HOSTNAME", None)
+        else:
+            os.environ["HOSTNAME"] = saved_host
+        if saved_self is not None:
+            os.environ["SELF_CONTAINER"] = saved_self
+
+
 def main():
     m.Base.metadata.create_all(bind=dbm.engine)
     db = dbm.SessionLocal()
@@ -324,6 +416,7 @@ def main():
         test_release_current(db)
         test_status_file()
         test_preflight(db)
+        test_self_container()
     finally:
         db.close()
     print(f"\n结果：\033[32m{OK} 通过\033[0m / \033[31m{FAIL} 失败\033[0m")

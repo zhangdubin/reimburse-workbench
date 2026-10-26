@@ -57,7 +57,7 @@ from .routers import (
 from .seed import ensure_seed
 
 APP_NAME = "销售费用报销管理工作台"
-APP_VERSION = "2.9.30"
+APP_VERSION = "2.9.31"
 
 FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", Path(__file__).resolve().parents[2] / "frontend"))
 
