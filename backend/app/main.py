@@ -57,7 +57,7 @@ from .routers import (
 from .seed import ensure_seed
 
 APP_NAME = "销售费用报销管理工作台"
-APP_VERSION = "2.9.31"
+APP_VERSION = "2.9.32"
 
 FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", Path(__file__).resolve().parents[2] / "frontend"))
 
@@ -239,13 +239,22 @@ async def lifespan(app: FastAPI):
         task = asyncio.create_task(_mail_loop())
         print(f"[boot] 邮箱自动收票已开启：每 {MAIL_SYNC_MINUTES} 分钟一次")
 
-    # 5) 在线升级：清掉上一轮遗留的执行器容器，按配置决定是否定时查新版
+    # 5) 在线升级：清掉上一轮遗留的执行器容器、回收过期的旧升级包，
+    #    按配置决定是否定时查新版
     upgrade_task = None
     try:
         from . import upgrade_runner as _ur
         _ur.cleanup_worker()
     except Exception as exc:  # noqa: BLE001
         print(f"[upgrade] 清理升级执行器容器失败（忽略）：{exc!r}")
+    try:
+        from . import upgrade_runner as _ur
+        _res = _ur.cleanup_packages()           # 每条 380MB，攒几版就把磁盘吃满
+        if (_res.get("freed") or 0) > 0:
+            print("[upgrade] 回收旧升级包 %d 份，释放 %.0f MB"
+                  % (len(_res.get("removed") or []), _res["freed"] / 1048576.0))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[upgrade] 回收旧升级包失败（忽略）：{exc!r}")
     try:
         from . import upgrade_client as _uc
         _db = SessionLocal()

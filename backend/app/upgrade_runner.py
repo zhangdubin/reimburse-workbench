@@ -28,6 +28,8 @@ from . import upgrade_client as uc
 
 UPGRADE_DIR = os.getenv("UPGRADE_DIR", "/app/data/upgrade")
 PKG_DIR = os.path.join(UPGRADE_DIR, "pkg")
+# 每次 docker load 完就该回收旧包；日常启动时容忍它们在磁盘上躺这么久
+PKG_KEEP_DAYS = int(os.getenv("UPGRADE_PKG_KEEP_DAYS", "7") or 7)
 BUNDLE_DIR = os.path.join(UPGRADE_DIR, "bundle")
 STATUS_PATH = os.path.join(UPGRADE_DIR, "status.json")
 LOG_MAX = 240
@@ -165,6 +167,48 @@ def busy() -> bool:
         except ValueError:
             pass
     return True
+
+
+def cleanup_packages(keep_tag: str = "", older_than_days: int = PKG_KEEP_DAYS) -> dict:
+    """回收升级卷里残留的镜像包。
+
+    每份镜像包 380MB，升级完没人删的话攒几版就是几个 GB（开发机实测堆到 2.8GB，
+    服务器上同理会悄无声息地把分区吃掉）。两种调用姿势：
+
+      - 升级成功后 cleanup_packages(keep_tag=目标版本)：只留本次那一份，其余全删
+      - 应用启动时 cleanup_packages()：只回收若干天前、且不是当前版本的包
+
+    清理失败不该拖累升级主流程，所以异常一律就地吞掉。
+    """
+    removed: list = []
+    kept: list = []
+    freed = 0
+    try:
+        names = sorted(os.listdir(PKG_DIR))
+    except Exception:  # noqa: BLE001
+        return {"removed": removed, "kept": kept, "freed": 0}
+    cur = uc.current_version()
+    keep = {v for v in (keep_tag, cur) if v}
+    deadline = time.time() - max(0, int(older_than_days)) * 86400
+    for name in names:
+        path = os.path.join(PKG_DIR, name)
+        try:
+            if not os.path.isfile(path) or not name.endswith(".tar.gz"):
+                continue          # 正在下载的 .part 不碰
+            st = os.stat(path)
+            is_keep = any(v in name for v in keep)
+            if not is_keep and (keep_tag or st.st_mtime < deadline):
+                os.remove(path)
+                freed += st.st_size
+                removed.append(name)
+            else:
+                kept.append(name)
+        except Exception:  # noqa: BLE001
+            continue
+    if removed:
+        print("[upgrade] 清理 %d 份旧升级包，释放 %.0f MB：%s"
+              % (len(removed), freed / 1048576.0, ", ".join(removed)), flush=True)
+    return {"removed": removed, "kept": kept, "freed": freed}
 
 
 # ---------- 前置检查 ----------

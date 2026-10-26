@@ -22,7 +22,7 @@ import tarfile
 import time
 
 from . import docker_api as dk
-from .upgrade_runner import append_log, write_status
+from .upgrade_runner import append_log, cleanup_packages, write_status
 
 TARGET_TAG = (os.getenv("UP_TARGET_TAG") or "").strip()
 IMAGE_TAR = (os.getenv("UP_IMAGE_TAR") or "").strip()
@@ -289,6 +289,14 @@ def _swap(app_id: str) -> None:
         write_status(phase="done", ok=True, progress=1.0,
                      message="升级完成，已运行 %s" % TARGET_TAG, detail=NOTES,
                      finished_at=_stamp())
+        # 每份镜像包 380MB，留在这儿早晚会撑满磁盘——成功之后再收
+        try:
+            freed = cleanup_packages(keep_tag=TARGET_TAG)
+        except Exception:  # noqa: BLE001
+            freed = {}
+        if freed.get("freed"):
+            append_log("清理旧升级包 %d 份，释放 %.0f MB"
+                       % (len(freed.get("removed") or []), freed["freed"] / 1048576.0))
         return
 
     append_log("新版本未通过健康检查，开始回滚")

@@ -15,9 +15,11 @@
 import io
 import os
 import pathlib
+import shutil
 import sys
 import tarfile
 import tempfile
+import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -339,6 +341,68 @@ def test_stale_failure():
         ur.write_status(phase="idle", progress=0.0, message="", detail="")
 
 
+def test_pkg_cleanup():
+    """升级包回收：每份 380MB，不清理迟早把磁盘吃满（开发机实测堆到 2.8GB）。"""
+    group("升级包回收")
+    real_pkg, real_ver = ur.PKG_DIR, uc.current_version
+    tmp = ""
+    try:
+        tmp = tempfile.mkdtemp(prefix="upgrade_pkg_")
+        ur.PKG_DIR = tmp
+        uc.current_version = lambda: "2.9.31"
+
+        def touch(name, days=0):
+            p = os.path.join(tmp, name)
+            with open(p, "wb") as fh:
+                fh.write(b"x" * 2048)
+            if days:
+                old = time.time() - days * 86400
+                os.utime(p, (old, old))
+
+        touch("reimburse-workbench-2.9.31-linux-amd64.tar.gz", days=40)  # 当前版本，再老也留
+        touch("reimburse-workbench-2.9.30-linux-amd64.tar.gz", days=30)  # 有代差且过期 → 回收
+        touch("reimburse-workbench-2.9.29-linux-amd64.tar.gz")           # 几天前才下的 → 留着
+        touch("app-bundle.tar.gz")                                       # 骨架包（不带版本号）
+        touch("reimburse-workbench-2.9.28-linux-amd64.tar.gz.part")      # 正在下载 → 谁都不许动
+
+        res = ur.cleanup_packages()
+        check("启动扫描只回收有代差且已过期的",
+              res.get("removed") == ["reimburse-workbench-2.9.30-linux-amd64.tar.gz"])
+        check("回收掉的确实换回了空间", res.get("freed") == 2048)
+        check("当前版本的包再老也不动",
+              "reimburse-workbench-2.9.31-linux-amd64.tar.gz" in (res.get("kept") or []))
+        check("刚下载的包不回收",
+              "reimburse-workbench-2.9.29-linux-amd64.tar.gz" in (res.get("kept") or []))
+        check("正在下载的 .part 不被误删",
+              os.path.exists(os.path.join(tmp, "reimburse-workbench-2.9.28-linux-amd64.tar.gz.part")))
+
+        res2 = ur.cleanup_packages(keep_tag="2.9.32")
+        left = sorted(x for x in os.listdir(tmp) if x.endswith(".tar.gz"))
+        check("升级成功后只留本次目标与当前版本",
+              left == ["reimburse-workbench-2.9.31-linux-amd64.tar.gz"])
+        check("足够旧的 bundle 包也一并回收", len(res2.get("removed") or []) >= 2)
+
+        check("pkg 目录不存在时不抛异常", _cleanup_missing_ok())
+    finally:
+        ur.PKG_DIR = real_pkg
+        uc.current_version = real_ver
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _cleanup_missing_ok() -> bool:
+    """目录被删/没权限时清理必须静默失败，不能把启动流程带崩。"""
+    saved = ur.PKG_DIR
+    try:
+        ur.PKG_DIR = "/nonexistent/upgrade-pkg-check"
+        res = ur.cleanup_packages()
+        return res.get("removed") == [] and res.get("freed") == 0
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        ur.PKG_DIR = saved
+
+
 def test_self_container():
     """自身容器识别：HOSTNAME 不可靠时仍要能定位（2.9.27 线上翻车的场景）。"""
     group("自身容器识别")
@@ -444,6 +508,7 @@ def main():
         test_release_current(db)
         test_status_file()
         test_stale_failure()
+        test_pkg_cleanup()
         test_preflight(db)
         test_self_container()
     finally:
