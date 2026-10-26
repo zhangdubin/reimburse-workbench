@@ -750,7 +750,9 @@ th.num { text-align: right; }
 }
 
 /* ---------------- 系统参数（v2.9.8 视觉重做） ---------------- */
-.set-card { max-width: 1080px; }
+/* 页面信息密度低，收窄到 1080 并水平居中——.view-inner 有 1560，
+   不居中的话卡片贴左、右侧空一大块（v2.9.33 修） */
+.set-card { max-width: 1080px; margin-left: auto; margin-right: auto; }
 
 /* 顶部「当前生效」速览：沿用统计看板 .kpi 的语言——左侧色条 + 大号等宽数值，
    先给结论再看明细，而不是一排灰色 chip。 */

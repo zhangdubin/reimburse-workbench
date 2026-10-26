@@ -998,6 +998,25 @@
   .set-ctrl .set-toggle { width: 100%; max-width: 240px; justify-content: space-between; }
 }
 
+/* ---------------- 单点登录页（v2.9.33 手机端细化） ---------------- */
+@media (max-width: 820px) {
+  /* 回调地址直接折行展示——横着滑在手机上根本没人滑得到头 */
+  .sso-c-url {
+    white-space: normal; word-break: break-all; overflow-x: visible;
+    font-size: var(--fs-2xs); line-height: 1.6;
+  }
+  /* 四个操作按钮 2×2 网格：一行四个在 390 宽下每个不到 80px，按不准 */
+  .sso-c-actions {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2);
+  }
+  .sso-c-actions .btn { min-height: 40px; }
+  /* 协议徽标与标题挤一行会换两行，允许它自然换行并收紧行距 */
+  .sso-c-title { row-gap: 4px; }
+  .sso-card { padding: var(--sp-4); }
+  /* 顶部指标卡：数值与说明的间距收紧，单列三张别把配置卡片顶出首屏 */
+  .set-metric { padding: var(--sp-3) var(--sp-3) var(--sp-3) calc(var(--sp-3) + 5px); }
+}
+
 /* ---------------- Jev 配置表（kv）手机端：表格改卡片，与 .tbl 同款手法 ---------------- */
 @media (max-width: 820px) {
   table.kv { display: block; }
