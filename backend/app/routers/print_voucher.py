@@ -54,12 +54,17 @@ def _doc_out(a: m.InvoiceAttachment) -> dict:
             mime = "image/png"
         elif ext == ".webp":
             mime = "image/webp"
+        elif ext == ".ofd":
+            mime = "application/ofd"
     if mime in _PDF_MIME:
         media = "pdf"
     elif mime.startswith(_IMAGE_MIME):
         media = "image"
+    elif ext == ".ofd" or mime == "application/ofd":
+        # OFD 电子发票原件：服务端转 SVG（/attachments/{id}/ofd.svg），可预览可打印
+        media = "ofd"
     else:
-        # ofd/xml/xlsx 等原件没法直接上图，打印时给占位卡
+        # xml/xlsx 等原件没法直接上图，打印时给占位卡
         media = "other"
     return {
         "id": a.id,
@@ -71,6 +76,7 @@ def _doc_out(a: m.InvoiceAttachment) -> dict:
         "media": media,
         "size": a.size,
         "url": f"/api/attachments/{a.id}/raw",
+        **({"svg_url": f"/api/attachments/{a.id}/ofd.svg"} if media == "ofd" else {}),
     }
 
 

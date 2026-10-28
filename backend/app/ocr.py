@@ -285,6 +285,88 @@ def pdf_extract_text(data: bytes, max_pages: int | None = None) -> str:
     return "\n".join(c.strip() for c in chunks if c and c.strip())
 
 
+def pdf_extract_lines(data: bytes, max_pages: int | None = None) -> str:
+    """按「视觉行」抽取 PDF 文字层。
+
+    get_text_range() 返回的是内容流对象序，数电票版式文件把值聚块堆在页尾，
+    标签行里全是空值，识别器按「标签：值」配对就废了。这里用 pdfium 的
+    rect 分段（内置文本运行合并，抗竖排字/印章干扰），再把同一水平带里的
+    段落按 x 排序拼成行——「名称： 买方 销方」就能被行级解析直接读到。
+    """
+    if not probe()["pdfium"]:
+        return ""
+    try:
+        import pypdfium2 as pdfium
+
+        doc = pdfium.PdfDocument(data)
+    except Exception:  # noqa: BLE001
+        return ""
+    pages: list[str] = []
+    try:
+        for idx in range(min(len(doc), max_pages or MAX_PDF_PAGES)):
+            try:
+                tp = doc[idx].get_textpage()
+                n_rect = tp.count_rects(0, -1)
+                if n_rect <= 0:
+                    continue
+                rects: list[tuple[float, float, float, float, str]] = []
+                for i in range(n_rect):
+                    l, b, r, t = tp.get_rect(i)
+                    txt = (tp.get_text_bounded(l, b, r, t) or "").strip()
+                    if txt:
+                        rects.append((b, l, r, t, txt))
+                if not rects:
+                    continue
+                # y 向上：按顶缘从高到低聚行；纵向重叠 ≥ 短边一半算同一行。
+                # 竖排标签（购买方信息）会被 pdfium 合成一个「高瘦」rect，
+                # 不能让它当行锚——先把正常高度的分好行，高瘦的再挂回重叠最多的行。
+                rects.sort(key=lambda x: -x[3])
+                heights = sorted(t - b for b, l, r, t, _ in rects)
+                h_med = max(heights[len(heights) // 2], 1.0)
+                normal = [x for x in rects if (x[3] - x[0]) <= 2.0 * h_med]
+                tall = [x for x in rects if (x[3] - x[0]) > 2.0 * h_med]
+                rows: list[list[tuple[float, float, float, str]]] = []
+                for b, l, r, t, txt in normal:
+                    for row in rows:
+                        rt = row[0][2]
+                        ov = min(t, rt) - max(b, row[0][0])
+                        if ov > 0 and ov >= 0.5 * min(t - b, rt - row[0][0]):
+                            row.append((b, l, r, txt))
+                            break
+                    else:
+                        rows.append([(b, l, r, txt)])
+                for b, l, r, t, txt in tall:
+                    best, best_ov = None, 0.0
+                    for row in rows:
+                        rt = row[0][2]
+                        ov = min(t, rt) - max(b, row[0][0])
+                        if ov > best_ov:
+                            best, best_ov = row, ov
+                    if best is not None and best_ov > 0:
+                        best.append((b, l, r, txt))
+                    else:
+                        rows.append([(b, l, r, txt)])
+                for row in rows:
+                    row.sort(key=lambda c: c[1])
+                    buf = ""
+                    prev_right = None
+                    for b, l, r, txt in row:
+                        if prev_right is not None and l - prev_right > 2.5:
+                            buf += " "
+                        buf += txt
+                        prev_right = r
+                    buf = buf.strip()
+                    if buf:
+                        pages.append(buf)
+            except Exception:  # noqa: BLE001
+                continue
+    finally:
+        close = getattr(doc, "close", None)
+        if callable(close):
+            close()
+    return "\n".join(p for p in pages if p.strip())
+
+
 def pdf_to_images(data: bytes, max_pages: int | None = None, scale: float | None = None) -> list[bytes]:
     """把 PDF 每页栅格化成 PNG 字节。没有文字层的扫描件走这条路。"""
     if not probe()["pdfium"]:

@@ -462,7 +462,19 @@ WB.views = WB.views || {};
           const del = e.target.closest('[data-del]');
           if (view) {
             const id = Number(view.dataset.view);
-            const url = view.dataset.blob || (await api.attachmentBlobUrl(id));
+            // OFD 原件浏览器打不开：改预览服务端转好的 SVG（v2.9.35）
+            const att = (list || []).find((x) => x.id === id);
+            let url;
+            if (att && /\.ofd$/i.test(att.filename || '')) {
+              try {
+                url = await api.attachmentOfdUrl(id);
+              } catch (_) {
+                U.toast('OFD 预览失败（文件可能不是有效的 OFD）', 'warn');
+                return;
+              }
+            } else {
+              url = view.dataset.blob || (await api.attachmentBlobUrl(id));
+            }
             if (!view.dataset.blob) blobs.push(url);
             const a = document.createElement('a');
             a.href = url;

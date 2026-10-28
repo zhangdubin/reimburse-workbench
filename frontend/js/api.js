@@ -166,6 +166,13 @@ window.WB = window.WB || {};
       return URL.createObjectURL(await res.blob());
     },
 
+    /* OFD 原件预览：服务端转 SVG（浏览器打不开 OFD 本体），返回 blob URL */
+    attachmentOfdUrl: async (id, page = 1) => {
+      const res = await raw('GET', `/api/attachments/${id}/ofd.svg?page=${page}`);
+      const blob = await res.blob();
+      return URL.createObjectURL(blob.type === 'image/svg+xml' ? blob : new Blob([blob], { type: 'image/svg+xml' }));
+    },
+
     /* 发票收件箱：邮箱收票与自动识别 */
     mailAccounts: () => api.get('/api/mail-accounts'),
     createMailAccount: (b) => api.post('/api/mail-accounts', b),

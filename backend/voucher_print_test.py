@@ -106,6 +106,22 @@ def req(method, path, body=None, params=None, token=None, files=None):
             return e.code, payload.decode(errors="replace")
 
 
+def req_raw(method, path, token=None):
+    """拿原始响应（状态码、文本、Content-Type），给 SVG 端点用。"""
+    url = BASE + path
+    headers = {"Authorization": "Bearer " + token} if token else {}
+    r = urllib.request.Request(url, method=method)
+    for k, v in headers.items():
+        r.add_header(k, v)
+    opener = urllib.request.build_opener()
+    opener.add_handler(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(r, timeout=30) as resp:
+            return resp.status, resp.read().decode(errors="replace"), resp.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace"), e.headers.get("Content-Type", "")
+
+
 def main():
     global TOKEN
     tag = uuid.uuid4().hex[:6]
@@ -214,6 +230,34 @@ def main():
           medias2 == ["image", "pdf"], medias2)
     exts2 = [a["ext"] for a in d5["invoices"][0]["attachments"]]
     check("ext 字段给出真实后缀", exts2 == ["jpg", "pdf"], exts2)
+
+    print("\n== OFD 原件：media 判定 + SVG 预览端点 ==")
+    from ofd_render_test import build_ofd
+
+    st, _ = req(
+        "POST", f"/api/invoices/{inv2['id']}/attachments",
+        files=[("file", "e_invoice.ofd", build_ofd(pages=2), "application/octet-stream")],
+        body={"kind": "invoice"}, token=TOKEN,
+    )
+    check("OFD 上传（octet-stream）", st in (200, 201), st)
+    st, d6 = req("GET", "/api/print/vouchers", params={"ids": str(inv2["id"])}, token=TOKEN)
+    ofds = [a for a in d6["invoices"][0]["attachments"] if a.get("ext") == "ofd"]
+    check("OFD 判成 media=ofd", len(ofds) == 1 and ofds[0]["media"] == "ofd",
+          [a.get("media") for a in d6["invoices"][0]["attachments"]])
+    check("OFD 给出 svg_url", bool(ofds) and ofds[0].get("svg_url", "").endswith("/ofd.svg"),
+          ofds and ofds[0].get("svg_url"))
+    if ofds:
+        svg_url = ofds[0]["svg_url"]
+        st, body, ctype = req_raw("GET", svg_url + "?page=1", token=TOKEN)
+        check("SVG 第 1 页 200 且是 svg", st == 200 and ctype.startswith("image/svg+xml")
+              and body.startswith("<svg"), f"{st} {ctype}")
+        check("SVG 内容含票面文本", "第1页" in body, body[:80])
+        st, body2, _ = req_raw("GET", svg_url + "?page=2", token=TOKEN)
+        check("SVG 第 2 页 200（多页）", st == 200 and "第2页" in body2, st)
+        st, _, _ = req_raw("GET", svg_url + "?page=3", token=TOKEN)
+        check("SVG 超页 404", st == 404, st)
+        st, _, _ = req_raw("GET", svg_url.replace("/ofd.svg", "/raw"), token=TOKEN)
+        check("raw 原件仍可下载", st == 200, st)
 
     print("\n== 按 ids 取清单 ==")
     st, d2 = req("GET", "/api/print/vouchers", params={"ids": str(inv_id)}, token=TOKEN)

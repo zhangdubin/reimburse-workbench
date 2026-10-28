@@ -241,6 +241,50 @@ def download_attachment(
     )
 
 
+@router.get("/attachments/{aid}/ofd.svg")
+def ofd_attachment_svg(
+    aid: int,
+    page: int = 1,
+    user: Annotated[m.AppUser, Depends(sec.current_user)] = None,  # type: ignore[assignment]
+    db: Session = Depends(get_db),
+):
+    """OFD 原件转 SVG 页面（v2.9.35）。
+
+    OFD 是 zip+XML 版式文件，浏览器原生打不开；这里在服务端渲染成
+    矢量 SVG，前端预览与凭证打印共用这一个端点。权限口径与 /raw 一致
+    （登录即可见自己有权访问的发票附件，打印侧另有 invoice 范围校验）。
+    """
+    row = db.get(m.InvoiceAttachment, aid)
+    if not row:
+        raise HTTPException(404, "附件不存在")
+    try:
+        path = fs.resolve(row.stored_name)
+    except fs.FileRejected:
+        raise HTTPException(400, "非法的附件路径")
+    if not path.exists():
+        raise HTTPException(404, "附件文件已丢失，请重新上传")
+    if path.suffix.lower() != ".ofd":
+        raise HTTPException(400, "该附件不是 OFD 文件")
+
+    from fastapi import Response
+
+    from .. import ofdrender
+
+    try:
+        pages = ofdrender.render_pages(path.read_bytes())
+    except ofdrender.OfdError as exc:
+        raise HTTPException(400, f"无法预览的 OFD 文件：{exc}")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"无法预览的 OFD 文件：{exc}")
+    if page < 1 or page > len(pages):
+        raise HTTPException(404, "页码超出范围")
+    return Response(
+        pages[page - 1],
+        media_type="image/svg+xml",
+        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=300"},
+    )
+
+
 @router.delete("/attachments/{aid}")
 def delete_attachment(
     aid: int,

@@ -17,7 +17,7 @@
   'use strict';
 
   const U = WB.util;
-  const V = '2.9.34';                 // 与 index.html 的 ?v= 一致，改版要同步
+  const V = '2.9.35';                 // 与 index.html 的 ?v= 一致，改版要同步
   const PDF_MAX_PAGES = 5;            // 单份 PDF 最多渲染页数（防超大文件把内存吃干）
   const WIDE_RATIO = 1.35;            // 宽高比 ≥ 此值按「横长票」处理，独占一行
 
@@ -86,6 +86,45 @@
       if (!r.ok) throw new Error(`读取凭证失败 (${r.status})`);
       return r.blob();
     });
+  }
+
+  /** 带登录态取文本；404 返回 null（OFD 逐页探测的终止信号），其余状态抛错 */
+  function authFetchText(url) {
+    return fetch(url, {
+      headers: Object.assign(
+        { Accept: 'image/svg+xml, */*' },
+        WB.auth && WB.auth.token ? { Authorization: 'Bearer ' + WB.auth.token } : {}
+      ),
+    }).then((r) => {
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`读取凭证失败 (${r.status})`);
+      return r.text();
+    });
+  }
+
+  const OFD_MAX_PAGES = 20;
+
+  /** OFD 原件 → 逐页 SVG → 位图瓦片。页数由 404 探测，上限 20 页 */
+  async function ofdTiles(base, q) {
+    const out = [];
+    for (let p = 1; p <= OFD_MAX_PAGES; p++) {
+      const sep = base.includes('?') ? '&' : '?';
+      let text = null;
+      try {
+        text = await authFetchText(`${base}${sep}page=${p}`);
+      } catch (e) {
+        if (!out.length) throw e;
+        break; // 后续页失败但已有内容：用手头的页继续打
+      }
+      if (text === null) break;
+      const blob = new Blob([text], { type: 'image/svg+xml' });
+      const tiles = await imageTiles(blob, q);
+      tiles.forEach((t) => {
+        if (!t.nodoc) out.push(t);
+      });
+    }
+    if (!out.length) throw new Error('OFD 渲染失败：没有可显示的页面');
+    return out;
   }
 
   /** 白底 + 等比缩放 + JPEG，避免 PNG 透明底打印成黑块、也压掉数据体积 */
@@ -167,16 +206,20 @@
   async function pdfTiles(blob, q) {
     const lib = await loadPdfjs();
     const buf = await blob.arrayBuffer();
+    // cMapUrl 必须带：数电票/铁路客票的值字段用 CID 编码字体，没有 CMap
+    // pdf.js 解不出字形——模板框线在、票面值全空白（2.9.35 修复）
+    const cmapUrl = `vendor/pdf/cmaps/`;
+    const docOpts = { data: buf, cMapUrl, cMapPacked: true };
     let doc;
     try {
-      doc = await lib.getDocument({ data: buf }).promise;
+      doc = await lib.getDocument(docOpts).promise;
     } catch (e) {
       const msg = String((e && e.message) || e);
       // 数电票 PDF 常带「所有者密码」（只限制改、不限制看），pdf.js 会直接抛
       // PasswordException；先用空密码再试一次，仍不行就把原话抛给用户
       if ((e && e.name === 'PasswordException') || /password/i.test(msg)) {
         try {
-          doc = await lib.getDocument({ data: buf, password: '' }).promise;
+          doc = await lib.getDocument(Object.assign({}, docOpts, { password: '' })).promise;
         } catch (e2) {
           throw new Error('PDF 已加密，无法渲染：' + String((e2 && e2.message) || e2));
         }
@@ -833,6 +876,18 @@ window.onload = () => {
                   }));
                   if (g.nodoc) failsCache.push(sub);
                 });
+              } else if (doc.media === 'ofd') {
+                // OFD 电子发票原件：服务端已转好 SVG，逐页拉取转位图
+                const base = doc.svg_url || `/api/attachments/${doc.id}/ofd.svg`;
+                const got = await ofdTiles(base, q);
+                got.forEach((g, gi) => {
+                  tiles.push(Object.assign({}, g, {
+                    label,
+                    sub,
+                    multi: got.length > 1 ? `第 ${gi + 1}/${got.length} 页` : '',
+                  }));
+                  if (g.nodoc) failsCache.push(sub);
+                });
               } else {
                 // ofd/xml/xlsx 原件：打不出图，占位卡写清文件名与格式
                 const fmt = ext || '原件';
@@ -1022,5 +1077,5 @@ window.onload = () => {
     });
   }
 
-  WB.voucherPrint = { open, buildHtml, paginate, paginateManual, LAYOUTS, QUALITY };
+  WB.voucherPrint = { open, buildHtml, paginate, paginateManual, LAYOUTS, QUALITY, ofdTiles };
 })();

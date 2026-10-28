@@ -1709,9 +1709,13 @@ def _file_texts(data: bytes, name: str, use_ocr: bool) -> tuple[list[tuple[str, 
         or data[:8] == b"\x89PNG\r\n\x1a\n"
     )
 
-    # 2) PDF：先文字层（准且快），没有文字层说明是扫描件，才栅格化跑 OCR
+    # 2) PDF：先文字层（准且快），没有文字层说明是扫描件，才栅格化跑 OCR。
+    #    优先视觉行版：数电票版式文件的对象序把值聚块堆在页尾，「标签：值」配不上；
+    #    视觉行把「名称： 买方 销方」还原成一行，行级解析才能读到（v2.9.35）。
     if looks_pdf:
-        layer = _ocr.pdf_extract_text(data) if use_ocr else ""
+        layer = ""
+        if use_ocr:
+            layer = _ocr.pdf_extract_lines(data) or _ocr.pdf_extract_text(data)
         if layer and len(layer.strip()) >= 20:
             out.append(("pdf-text", layer))
         elif use_ocr:
