@@ -17,7 +17,7 @@
   'use strict';
 
   const U = WB.util;
-  const V = '2.9.33';                 // 与 index.html 的 ?v= 一致，改版要同步
+  const V = '2.9.34';                 // 与 index.html 的 ?v= 一致，改版要同步
   const PDF_MAX_PAGES = 5;            // 单份 PDF 最多渲染页数（防超大文件把内存吃干）
   const WIDE_RATIO = 1.35;            // 宽高比 ≥ 此值按「横长票」处理，独占一行
 
@@ -27,13 +27,15 @@
     high: { label: '高清', maxSide: 2400, quality: 0.9 },
   };
 
-  // 拼版档位：cols × rows = 每页格数；auto 由票据长宽比决定占几格
+  // 拼版档位：cols × rows = 每页格数；auto 由票据长宽比决定占几格，
+  // manual 不预设版面，转图后由用户在排版编辑器里逐张决定宽度与顺序。
   const LAYOUTS = [
     { id: 'auto', label: '智能自适应', cols: 2, rows: 2 },
     { id: '1', label: '1 张/页', cols: 1, rows: 1 },
     { id: '2', label: '2 张/页', cols: 1, rows: 2 },
     { id: '4', label: '4 张/页', cols: 2, rows: 2 },
     { id: '6', label: '6 张/页', cols: 2, rows: 3 },
+    { id: 'manual', label: '手动排版', cols: 2, rows: 2 },
   ];
 
   const state = {
@@ -99,40 +101,112 @@
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, cw, ch);
     ctx.drawImage(source, 0, 0, cw, ch);
-    return { dataUrl: cv.toDataURL('image/jpeg', quality), ratio: cw / ch };
+    return { dataUrl: cv.toDataURL('image/jpeg', quality), ratio: cw / ch, cv };
+  }
+
+  /** 判断是不是「解码出了个黑块」——16 位 PNG 经 createImageBitmap 画进 8 位
+   *  canvas 会整张变黑（实测 ink=100%），这种必须换 <img> 再解一次。
+   *  只判全黑不判全白：空白扫描件可能是用户的真实票据，替人做主更糟。 */
+  function looksBroken(cv) {
+    const s = document.createElement('canvas');
+    s.width = 24;
+    s.height = 24;
+    const c = s.getContext('2d');
+    c.fillStyle = '#fff';
+    c.fillRect(0, 0, 24, 24);
+    c.drawImage(cv, 0, 0, 24, 24);
+    const d = c.getImageData(0, 0, 24, 24).data;
+    let dark = 0;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const g = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+      sum += g;
+      if (g < 40) dark += 1;
+    }
+    const n = d.length / 4;
+    return dark / n > 0.9 && sum / n < 30;
+  }
+
+  /** <img> 解码兜底：走浏览器原生解码器，兼容 createImageBitmap 不吃的格式 */
+  function loadImageEl(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('图片解码失败（文件可能已损坏或是网页另存的假图片）'));
+      };
+      img.src = url;
+    });
   }
 
   async function imageTiles(blob, q) {
-    const bmp = await createImageBitmap(blob);
+    let broken = null;
     try {
+      const bmp = await createImageBitmap(blob);
       const r = toDataUrl(bmp, bmp.width, bmp.height, q.maxSide, q.quality);
-      return [{ dataUrl: r.dataUrl, ratio: r.ratio }];
-    } finally {
       if (bmp.close) bmp.close();
+      if (!looksBroken(r.cv)) return [{ dataUrl: r.dataUrl, ratio: r.ratio }];
+      broken = r;
+    } catch (_) { /* 落到 <img> 兜底 */ }
+    const img = await loadImageEl(blob);
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    if (!w || !h) throw new Error('图片尺寸为 0，无法打印');
+    const r2 = toDataUrl(img, w, h, q.maxSide, q.quality);
+    if (broken && looksBroken(r2.cv)) {
+      throw new Error('图像解码后整张全黑（多为 16 位/特殊色彩模式），请用原件打印');
     }
+    return [{ dataUrl: r2.dataUrl, ratio: r2.ratio }];
   }
 
   async function pdfTiles(blob, q) {
     const lib = await loadPdfjs();
     const buf = await blob.arrayBuffer();
-    const doc = await lib.getDocument({ data: buf }).promise;
+    let doc;
+    try {
+      doc = await lib.getDocument({ data: buf }).promise;
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      // 数电票 PDF 常带「所有者密码」（只限制改、不限制看），pdf.js 会直接抛
+      // PasswordException；先用空密码再试一次，仍不行就把原话抛给用户
+      if ((e && e.name === 'PasswordException') || /password/i.test(msg)) {
+        try {
+          doc = await lib.getDocument({ data: buf, password: '' }).promise;
+        } catch (e2) {
+          throw new Error('PDF 已加密，无法渲染：' + String((e2 && e2.message) || e2));
+        }
+      } else {
+        throw new Error('PDF 无法解析：' + msg);
+      }
+    }
     const out = [];
     const n = Math.min(doc.numPages, PDF_MAX_PAGES);
     for (let p = 1; p <= n; p++) {
-      const page = await doc.getPage(p);
-      const base = page.getViewport({ scale: 1 });
-      const scale = q.maxSide / Math.max(base.width, base.height);
-      const vp = page.getViewport({ scale });
-      const cv = document.createElement('canvas');
-      cv.width = Math.round(vp.width);
-      cv.height = Math.round(vp.height);
-      const ctx = cv.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, cv.width, cv.height);
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      out.push({ dataUrl: cv.toDataURL('image/jpeg', q.quality), ratio: cv.width / cv.height });
-      page.cleanup();
+      try {
+        const page = await doc.getPage(p);
+        const base = page.getViewport({ scale: 1 });
+        const scale = q.maxSide / Math.max(base.width, base.height);
+        const vp = page.getViewport({ scale });
+        const cv = document.createElement('canvas');
+        cv.width = Math.round(vp.width);
+        cv.height = Math.round(vp.height);
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, cv.width, cv.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        out.push({ dataUrl: cv.toDataURL('image/jpeg', q.quality), ratio: cv.width / cv.height });
+        page.cleanup();
+      } catch (e) {
+        // 某一页画不出来不该拖垮整份凭证，单独标出来让用户知道缺第几页
+        out.push({ nodoc: true, ratio: 1.41, title: 'PDF 渲染失败', note: `第 ${p} 页无法渲染：${(e && e.message) || e}` });
+      }
     }
+    if (!doc.numPages) throw new Error('PDF 没有页面');
     await doc.destroy();
     return out;
   }
@@ -185,6 +259,44 @@
     return pages;
   }
 
+  /** 手动排版：完全按用户给的顺序与宽度装箱，不再替用户判断横竖。
+   *  span: 1 = 半栏、2 = 整行、'page' = 独占一页 */
+  function paginateManual(plan, cols) {
+    const per = cols * 2; // 手动模式固定两列两行，宽度由每张凭证自己决定
+    const pages = [];
+    let cur = [];
+    let used = 0;
+    const flush = () => {
+      if (cur.length) pages.push(cur);
+      cur = [];
+      used = 0;
+    };
+
+    plan.forEach((it) => {
+      if (it.span === 'page') {
+        flush();
+        pages.push([Object.assign({}, it, { fill: true })]);
+        return;
+      }
+      if (it.span === 2) {
+        if (used % cols !== 0) {
+          cur.push({ blank: true });
+          used += 1;
+        }
+        if (used + 2 > per) flush();
+        cur.push(Object.assign({}, it, { span: 2 }));
+        used += 2;
+      } else {
+        if (used + 1 > per) flush();
+        cur.push(Object.assign({}, it, { span: 1 }));
+        used += 1;
+      }
+      if (used >= per) flush();
+    });
+    flush();
+    return pages;
+  }
+
   /* ------------------------------------------------------------------ *
    * 打印 HTML
    * ------------------------------------------------------------------ */
@@ -202,8 +314,14 @@
       border: 1px dashed #9aa3ad; background: #fff;
       display: flex; align-items: center; justify-content: center;
       overflow: hidden; padding: 1.5mm; min-width: 0; min-height: 0;
+      position: relative;
     }
-    .vp-cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    /* 绝对定位撑满：Chrome 打印引擎对 grid 里 height:100% 的图片有高度塌陷
+       的老毛病——屏幕预览好好的，出纸就是空白格。绝对定位不受影响。 */
+    .vp-cell img {
+      position: absolute; inset: 0; margin: auto;
+      width: 100%; height: 100%; object-fit: contain; display: block;
+    }
     .vp-cell.blank { border-style: dotted; border-color: #d5d9de; }
     .vp-cell.nodoc { border-style: solid; border-color: #ddd; flex-direction: column; gap: 3mm; }
     .vp-cell .nd-t { font-size: 13px; font-weight: 700; color: #444; }
@@ -233,7 +351,7 @@
     if (t.blank) return `<div class="vp-cell blank" style="${style}"></div>`;
     if (t.nodoc) {
       return `<div class="vp-cell nodoc" style="${style}">
-        <div class="nd-t">${U.esc(t.title || '无法打印的凭证')}</div>
+        <div class="nd-t">${U.esc(t.title || t.label || '无法打印的凭证')}</div>
         <div class="nd-s">${U.esc(t.note || '').replace(/\n/g, '<br>')}</div>
       </div>`;
     }
@@ -241,9 +359,10 @@
   }
 
   function buildHtml(opts) {
-    const { tiles, meta, o } = opts;
+    const { tiles, meta, o, plan } = opts;
     const lay = layoutOf(o.layout);
-    const pages = paginate(tiles, lay);
+    // 手动排版走用户给的顺序与宽度；其余档位仍按图像比例智能装箱
+    const pages = plan && plan.length ? paginateManual(plan, lay.cols) : paginate(tiles, lay);
     const total = pages.length;
     const gridStyle = `grid-template-columns: repeat(${lay.cols}, 1fr); grid-template-rows: repeat(${lay.rows}, 1fr);`;
     const right = meta && meta.right ? U.esc(meta.right) : '';
@@ -418,6 +537,14 @@ window.onload = () => {
           <div class="vp-lbl">拼版</div>
           <div class="vp-ctl">${segButtons(LAYOUTS, state.layout, 'lay')}</div>
         </div>
+        <div class="vp-row vp-row-tip">
+          <div class="vp-lbl"></div>
+          <div class="vp-ctl"><span class="muted" id="vp-lay-tip" style="font-size:12px">${
+            state.layout === 'manual'
+              ? '转图后进入排版面板，逐张决定宽度与顺序'
+              : '按票据长宽比自动决定占半栏还是整行'
+          }</span></div>
+        </div>
         <div class="vp-row">
           <div class="vp-lbl">清晰度</div>
           <div class="vp-ctl">${segButtons(
@@ -528,29 +655,65 @@ window.onload = () => {
                <button class="btn btn-primary" id="vp-go" disabled>开始打印</button>`,
       onMount(apiMod) {
         const el = apiMod.el;
-        const goBtn = U.qs('#vp-go', el);
-        const selTxt = U.qs('#vp-sel', el);
+        const bodyEl = apiMod.body;
         const total = U.qsa('input[data-doc]', el).length;
+        let selIds = [];        // 勾选态在「设置 ↔ 排版」两次渲染之间保持
+        let tilesCache = [];    // 手动排版复用已转好的图，不重复转
+        let plan = [];          // [{ i, span }]，i 是 tilesCache 的下标
+        let failsCache = [];    // 没能打出票面的文件名，收尾时统一提示
 
-        /** 选中集以 DOM 勾选为准，避免「界面显示的和实际打印的」两套状态走偏 */
-        const selectedIds = () =>
-          U.qsa('input[data-doc]', el).filter((c) => c.checked).map((c) => Number(c.dataset.doc));
+        /* ---------------- 第一屏：选凭证 + 打印设置 ---------------- */
+        function paintSettings() {
+          bodyEl.innerHTML = settingsHtml(data);
+          // 恢复上一次的勾选（从排版面板返回时不能让用户重选一遍）
+          U.qsa('input[data-doc]', bodyEl).forEach((c) => {
+            c.checked = selIds.indexOf(Number(c.dataset.doc)) >= 0;
+          });
+          apiMod.setFooter(`<button class="btn" data-close>取消</button>
+            <button class="btn btn-primary" id="vp-go" disabled>开始打印</button>`);
+          const cut = U.qs('#vp-cut', bodyEl);
+          const pn = U.qs('#vp-pn', bodyEl);
+          if (cut) cut.onchange = () => { state.cutLine = cut.checked; };
+          if (pn) pn.onchange = () => { state.pageNo = pn.checked; };
+          const goBtn = U.qs('#vp-go', el); // 按钮在 modal footer，不在 body 内
+          if (goBtn) goBtn.onclick = startFlow;
+          refreshCount();
+        }
 
-        function refresh() {
-          const ids = selectedIds();
-          selTxt.textContent = `已选 ${ids.length} / ${total}`;
-          selTxt.classList.toggle('on', ids.length > 0);
-          goBtn.disabled = ids.length === 0;
-          goBtn.textContent = ids.length ? `开始打印（${ids.length} 份）` : '开始打印';
-          U.qsa('.vp-doc', el).forEach((d) => {
+        function refreshCount() {
+          const n = selIds.length;
+          const selTxt = U.qs('#vp-sel', bodyEl);
+          const goBtn = U.qs('#vp-go', el); // 同上：footer 里的按钮要从 el 找
+          if (selTxt) {
+            selTxt.textContent = `已选 ${n} / ${total}`;
+            selTxt.classList.toggle('on', n > 0);
+          }
+          if (goBtn) {
+            goBtn.disabled = n === 0;
+            goBtn.textContent = n ? `开始打印（${n} 份）` : '开始打印';
+          }
+          U.qsa('.vp-doc', bodyEl).forEach((d) => {
             const c = U.qs('input[data-doc]', d);
             d.classList.toggle('on', !!(c && c.checked));
           });
+          syncGroups();
+        }
+
+        /** 读 DOM 勾选回 selIds —— 界面看到的和实际打印的必须是同一份状态 */
+        function collectSel() {
+          selIds = U.qsa('input[data-doc]', bodyEl)
+            .filter((c) => c.checked)
+            .map((c) => Number(c.dataset.doc));
+        }
+
+        function syncGroups() {
           // 发票分组框：全选打勾、部分选中打横线
-          U.qsa('.vp-grp', el).forEach((g) => {
+          U.qsa('.vp-grp', bodyEl).forEach((g) => {
             const subs = U.qsa('input[data-doc]', g);
+            if (!subs.length) return;
             const hits = subs.filter((c) => c.checked).length;
             const head = U.qs('input[data-grp-all]', g);
+            if (!head) return;
             head.checked = hits > 0 && hits === subs.length;
             head.indeterminate = hits > 0 && hits < subs.length;
             g.classList.toggle('picked', hits > 0);
@@ -558,47 +721,73 @@ window.onload = () => {
         }
 
         function applyPreset(p) {
-          U.qsa('input[data-doc]', el).forEach((c) => {
+          U.qsa('input[data-doc]', bodyEl).forEach((c) => {
             const k = c.closest('.vp-doc').dataset.kind;
             if (p === 'all') c.checked = true;
             else if (p === 'none') c.checked = false;
             else if (p === 'invoice') c.checked = k === 'invoice';
             else c.checked = k !== 'invoice'; // 仅随票凭证
           });
+          collectSel();
           try { localStorage.setItem(PRESET_KEY, p); } catch (_) {}
-          refresh();
+          refreshCount();
         }
 
+        /* ---------------- 事件：全部委托到弹窗根节点，重画 DOM 不用重绑 ---------------- */
         U.on(el, 'click', '.vp-quick-b[data-preset]', (e, t) => applyPreset(t.dataset.preset));
-        U.on(el, 'change', 'input[data-doc]', () => refresh());
+        U.on(el, 'change', 'input[data-doc]', () => {
+          collectSel();
+          refreshCount();
+        });
         U.on(el, 'change', 'input[data-grp-all]', (e, head) => {
           const g = head.closest('.vp-grp');
           U.qsa('input[data-doc]', g).forEach((c) => { c.checked = head.checked; });
-          refresh();
+          collectSel();
+          refreshCount();
         });
 
         U.on(el, 'click', '.vp-seg-b[data-lay]', (e, t) => {
           state.layout = t.dataset.lay;
           U.qsa('.vp-seg-b[data-lay]', el).forEach((b) => b.classList.toggle('on', b === t));
+          const tip = U.qs('#vp-lay-tip', bodyEl);
+          if (tip) tip.textContent = state.layout === 'manual'
+            ? '转图后进入排版面板，逐张决定宽度与顺序'
+            : '按票据长宽比自动决定占半栏还是整行';
         });
         U.on(el, 'click', '.vp-seg-b[data-q]', (e, t) => {
           state.quality = t.dataset.q;
           U.qsa('.vp-seg-b[data-q]', el).forEach((b) => b.classList.toggle('on', b === t));
         });
-        const cut = U.qs('#vp-cut', el);
-        const pn = U.qs('#vp-pn', el);
-        cut.onchange = () => { state.cutLine = cut.checked; };
-        pn.onchange = () => { state.pageNo = pn.checked; };
+
+        /* 排版面板的委托 */
+        U.on(el, 'click', '.vp-pi-w button', (e, t) => {
+          const i = Number(t.closest('.vp-pi').dataset.i);
+          setSpan(i, t.dataset.w);
+        });
+        U.on(el, 'click', '.vp-pi-o [data-mv]', (e, t) => {
+          moveTile(Number(t.closest('.vp-pi').dataset.i), Number(t.dataset.mv));
+        });
+        U.on(el, 'click', '.vp-pi-o [data-del]', (e, t) => {
+          dropTile(Number(t.closest('.vp-pi').dataset.i));
+        });
+        U.on(el, 'click', '#vp-pa', () => autoArrange());
+        U.on(el, 'click', '[data-all]', (e, t) => {
+          const w = Number(t.dataset.all);
+          plan.forEach((p) => { p.span = w; });
+          redrawPlan();
+        });
 
         // 默认不替用户做主：一张都不预选；上次用过的快捷方式会被记住，常打印全
         // 部的人点一次「全选」后，下次打开就是这个习惯。
         let last = 'none';
         try { last = localStorage.getItem(PRESET_KEY) || 'none'; } catch (_) {}
+        paintSettings();
         applyPreset(last);
         loadThumbs(el, data);
 
-        goBtn.onclick = async () => {
-          const ids = selectedIds();
+        /* ---------------- 转图 → 出纸 / 进排版面板 ---------------- */
+        async function startFlow() {
+          const ids = selIds.slice();
           if (!ids.length) {
             U.toast('请先勾选要打印的凭证', 'warn');
             return;
@@ -612,18 +801,22 @@ window.onload = () => {
             });
           });
 
-          const prog = U.qs('#vp-prog', el);
-          const bar = U.qs('#vp-bar-i', el);
-          const txt = U.qs('#vp-prog-t', el);
-          prog.style.display = 'block';
-          goBtn.disabled = true;
+          const prog = U.qs('#vp-prog', bodyEl);
+          const bar = U.qs('#vp-bar-i', bodyEl);
+          const txt = U.qs('#vp-prog-t', bodyEl);
+          const goBtn = U.qs('#vp-go', el);
+          if (prog) prog.style.display = 'block';
+          if (goBtn) goBtn.disabled = true;
 
           const tiles = [];
-          let failed = 0;
+          failsCache = [];
           for (let i = 0; i < picked.length; i++) {
             const { doc } = picked[i];
-            txt.textContent = `正在处理第 ${i + 1} / ${picked.length} 份凭证…`;
-            bar.style.width = Math.round((i / picked.length) * 100) + '%';
+            const label = doc.kind_label || '凭证';
+            const ext = String(doc.ext || (doc.filename || '').split('.').pop() || '').toUpperCase();
+            const sub = `${doc.filename || ''}${ext ? ' · ' + ext : ''}`;
+            if (txt) txt.textContent = `正在处理第 ${i + 1} / ${picked.length} 份凭证…`;
+            if (bar) bar.style.width = Math.round((i / picked.length) * 100) + '%';
             // 让进度条有机会重绘（同步的 canvas 渲染会卡住主线程）
             await new Promise((r) => setTimeout(r, 0));
             try {
@@ -633,54 +826,201 @@ window.onload = () => {
                   ? await pdfTiles(blob, q)
                   : await imageTiles(blob, q);
                 got.forEach((g, gi) => {
-                  tiles.push({
-                    dataUrl: g.dataUrl,
-                    ratio: g.ratio,
-                    multi: got.length > 1 ? `（第 ${gi + 1}/${got.length} 页）` : '',
-                  });
+                  tiles.push(Object.assign({}, g, {
+                    label,
+                    sub,
+                    multi: got.length > 1 ? `第 ${gi + 1}/${got.length} 页` : '',
+                  }));
+                  if (g.nodoc) failsCache.push(sub);
                 });
               } else {
-                // ofd/xml/xlsx 原件：打不出图，给一张占位卡写清文件名，提醒用原件补打
+                // ofd/xml/xlsx 原件：打不出图，占位卡写清文件名与格式
+                const fmt = ext || '原件';
                 tiles.push({
                   nodoc: true,
                   ratio: 1.41,
-                  title: doc.kind_label || '凭证',
-                  note: `${doc.filename || ''}\n该格式无法直接打印，请用原件打印后粘贴`,
+                  label,
+                  sub,
+                  note: `${doc.filename || ''}\n${fmt} 格式无法直接生成票面图像，请用原件打印后粘贴`,
                 });
+                failsCache.push(sub);
               }
             } catch (e) {
-              failed += 1;
               tiles.push({
                 nodoc: true,
                 ratio: 1.41,
-                title: doc.kind_label || '凭证',
+                label,
+                sub,
                 note: `${doc.filename || ''}\n${e.message || '读取失败'}`,
               });
+              failsCache.push(sub);
             }
           }
 
-          bar.style.width = '100%';
-          txt.textContent = '排版中…';
+          if (bar) bar.style.width = '100%';
+          if (txt) txt.textContent = '排版中…';
           await new Promise((r) => setTimeout(r, 0));
 
+          tilesCache = tiles;
+          if (state.layout === 'manual') {
+            openPlan();
+            return;
+          }
+          finish(tiles, null);
+        }
+
+        /** 生成打印文档并送纸。planArr 有值时按用户排好的顺序与宽度装箱 */
+        function finish(tiles, planArr) {
           const reb = data.reimbursement;
+          const count = planArr ? planArr.length : tiles.length;
           const html = buildHtml({
             tiles,
+            plan: planArr,
             o: Object.assign({}, state),
             meta: {
               title: reb ? `凭证 ${reb.code}` : '凭证打印',
               right: reb
-                ? `${reb.code} · ${reb.applicant || ''} · 凭证 ${tiles.length} 份`
-                : `凭证 ${tiles.length} 份`,
+                ? `${reb.code} · ${reb.applicant || ''} · 凭证 ${count} 份`
+                : `凭证 ${count} 份`,
             },
           });
           apiMod.close();
           deliver(html);
-          if (failed) U.toast(`有 ${failed} 份凭证读取失败，已以空白卡占位`, 'warn');
-        };
+          if (failsCache.length) {
+            const head = failsCache.slice(0, 2).join('、');
+            U.toast(
+              `有 ${failsCache.length} 份没能打出票面：${head}${failsCache.length > 2 ? ' 等' : ''}`,
+              'warn',
+              6000
+            );
+          }
+        }
+
+        /* ---------------- 手动排版面板 ---------------- */
+        function openPlan() {
+          // 初值仍按图像比例给个合理建议，用户再改
+          plan = tilesCache.map((t, i) => ({ i, span: t.ratio >= WIDE_RATIO ? 2 : 1 }));
+          bodyEl.innerHTML = planShell();
+          apiMod.setFooter(`<button class="btn" id="vp-back">← 返回设置</button>
+            <button class="btn btn-primary" id="vp-do">打印</button>`);
+          const back = U.qs('#vp-back', el); // footer 里的按钮，必须从 modal 根节点找
+          if (back) back.onclick = () => paintSettings();
+          const doBtn = U.qs('#vp-do', el);
+          if (doBtn) {
+            doBtn.onclick = () => {
+              if (!plan.length) {
+                U.toast('排版里已经没有凭证了，返回设置重新勾选', 'warn');
+                return;
+              }
+              finish(tilesCache, plan.map((p) => Object.assign({}, tilesCache[p.i], { span: p.span })));
+            };
+          }
+          redrawPlan();
+        }
+
+        function planShell() {
+          const bad = tilesCache.filter((t) => t.nodoc).length;
+          return `
+            <div class="vp-plan">
+              <div class="vp-plan-note">
+                转图已完成，下面是实际会打印的内容。顺序就是贴票顺序，
+                「半栏 / 整行 / 整页」决定每张占多宽，✕ 表示这次不打这张。
+                ${bad ? `<br><b class="vp-plan-bad">其中 ${bad} 份无法打出票面</b>（列表标红）：多为 OFD/XML 电子发票原件或文件损坏，需用原件打印。` : ''}
+              </div>
+              <div class="vp-plan-bar">
+                <span>共 <b>${tilesCache.length}</b> 份 · 预计 <b id="vp-pages">0</b> 页</span>
+                <span class="spacer"></span>
+                <button type="button" class="btn btn-sm" id="vp-pa">按图像自动排</button>
+                <button type="button" class="btn btn-sm" data-all="1">全部半栏</button>
+                <button type="button" class="btn btn-sm" data-all="2">全部整行</button>
+              </div>
+              <div class="vp-plan-list" id="vp-plan-list"></div>
+              <div class="vp-plan-h2">分页预览（A4）</div>
+              <div class="vp-prev" id="vp-prev"></div>
+            </div>`;
+        }
+
+        function rowHtml(t, p, n) {
+          const th = t.dataUrl
+            ? `<img src="${t.dataUrl}" alt="">`
+            : '<i class="vp-ext">原件</i>';
+          const wBtn = ['1', '2', 'page']
+            .map((w) => {
+              const lab = w === '1' ? '半栏' : w === '2' ? '整行' : '整页';
+              return `<button type="button" data-w="${w}" class="${String(p.span) === w ? 'on' : ''}">${lab}</button>`;
+            })
+            .join('');
+          return `<div class="vp-pi${t.nodoc ? ' bad' : ''}" data-i="${p.i}">
+            <span class="vp-pi-n">${n + 1}</span>
+            <span class="vp-pi-th">${th}</span>
+            <span class="vp-pi-m">
+              <b>${U.esc(t.label || '凭证')}</b>
+              <em>${U.esc(t.sub || '')}${t.multi ? ' · ' + U.esc(t.multi) : ''}${t.nodoc ? ' · 无法打出票面' : ''}</em>
+            </span>
+            <span class="vp-pi-w">${wBtn}</span>
+            <span class="vp-pi-o">
+              <button type="button" data-mv="-1" ${n === 0 ? 'disabled' : ''} title="上移">↑</button>
+              <button type="button" data-mv="1" ${n === plan.length - 1 ? 'disabled' : ''} title="下移">↓</button>
+              <button type="button" data-del="1" title="这次不打印这张">✕</button>
+            </span>
+          </div>`;
+        }
+
+        function miniHtml(page, idx) {
+          const cells = page
+            .map((t) => {
+              const cls = t.blank ? ' blank' : t.fill ? ' fill' : t.span === 2 ? ' row' : '';
+              const bg = t.dataUrl ? ` style="background-image:url(${t.dataUrl})"` : '';
+              return `<i class="vp-mc${cls}"${bg}></i>`;
+            })
+            .join('');
+          return `<div class="vp-mini"><div class="vp-mini-g">${cells}</div>
+            <span class="vp-mini-n">第 ${idx + 1} 页</span></div>`;
+        }
+
+        function redrawPlan() {
+          const list = U.qs('#vp-plan-list', bodyEl);
+          if (list) list.innerHTML = plan.map((p, n) => rowHtml(tilesCache[p.i], p, n)).join('');
+          const arr = plan.map((p) => Object.assign({}, tilesCache[p.i], { span: p.span }));
+          const pages = paginateManual(arr, 2);
+          const pgEl = U.qs('#vp-pages', bodyEl);
+          if (pgEl) pgEl.textContent = pages.length;
+          const prev = U.qs('#vp-prev', bodyEl);
+          if (prev) prev.innerHTML = pages.map(miniHtml).join('');
+          const doBtn = U.qs('#vp-do', el);
+          if (doBtn) doBtn.textContent = `打印（${plan.length} 份 / ${pages.length} 页）`;
+        }
+
+        function setSpan(i, w) {
+          const p = plan.find((x) => x.i === i);
+          if (!p) return;
+          p.span = w === 'page' ? 'page' : Number(w);
+          redrawPlan();
+        }
+
+        function moveTile(i, dir) {
+          const idx = plan.findIndex((x) => x.i === i);
+          const to = idx + dir;
+          if (idx < 0 || to < 0 || to >= plan.length) return;
+          const it = plan.splice(idx, 1)[0];
+          plan.splice(to, 0, it);
+          redrawPlan();
+        }
+
+        function dropTile(i) {
+          plan = plan.filter((x) => x.i !== i);
+          redrawPlan();
+        }
+
+        function autoArrange() {
+          plan.forEach((p) => {
+            p.span = tilesCache[p.i].ratio >= WIDE_RATIO ? 2 : 1;
+          });
+          redrawPlan();
+        }
       },
     });
   }
 
-  WB.voucherPrint = { open, buildHtml, paginate, LAYOUTS, QUALITY };
+  WB.voucherPrint = { open, buildHtml, paginate, paginateManual, LAYOUTS, QUALITY };
 })();

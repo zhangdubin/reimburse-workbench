@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -40,6 +41,19 @@ _PDF_MIME = ("application/pdf",)
 def _doc_out(a: m.InvoiceAttachment) -> dict:
     kind = getattr(a, "kind", None) or m.DOC_INVOICE
     mime = (a.mime or "").split(";")[0].strip().lower()
+    ext = (Path(a.filename or a.stored_name or "").suffix or "").lower()
+    # 元数据不可信时按后缀兜底：邮件收票、手机上传常见 mime 为空或
+    # application/octet-stream，只认 mime 会把能打的图片/PDF 误判成「原件」，
+    # 打印出来就是一张占位卡（用户看到的「没有票面内容」）。
+    if not mime or mime == "application/octet-stream":
+        if ext in (".pdf",):
+            mime = "application/pdf"
+        elif ext in (".jpg", ".jpeg"):
+            mime = "image/jpeg"
+        elif ext == ".png":
+            mime = "image/png"
+        elif ext == ".webp":
+            mime = "image/webp"
     if mime in _PDF_MIME:
         media = "pdf"
     elif mime.startswith(_IMAGE_MIME):
@@ -52,6 +66,7 @@ def _doc_out(a: m.InvoiceAttachment) -> dict:
         "kind": kind,
         "kind_label": m.DOC_KIND_LABELS.get(kind, kind),
         "filename": a.filename,
+        "ext": ext.lstrip("."),
         "mime": mime,
         "media": media,
         "size": a.size,

@@ -1783,3 +1783,95 @@ table.kv td .hint { display: inline; margin-left: 8px; }
 .vp-bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
 .vp-bar i { display: block; height: 100%; width: 0; background: var(--primary); transition: width .2s ease; }
 .vp-prog-t { margin-top: 6px; font-size: var(--fs-xs); color: var(--text-2); }
+
+/* 拼版说明行：紧跟分段按钮，讲清这档会怎么排（v2.9.34 手动排版） */
+.vp-row-tip { border-top: none; padding-top: 0; margin-top: -4px; }
+
+/* ==================================================================
+   手动排版面板（v2.9.34）
+   转图完成后接管弹窗：顺序 = 贴票顺序，每张可选 半栏/整行/整页，
+   底部给 A4 分页预览，改一下就能看到页数变化。
+   ================================================================== */
+.vp-plan-note {
+  padding: 9px 12px; margin-bottom: 10px; border-radius: var(--radius-sm);
+  background: var(--primary-weak); border: 1px solid #cfe0f5;
+  font-size: var(--fs-sm); color: var(--text-2); line-height: 1.65;
+}
+.vp-plan-note b { color: var(--text); }
+.vp-plan-bad { color: var(--danger); }
+
+.vp-plan-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; margin-bottom: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--panel-2); font-size: var(--fs-sm); color: var(--text-2);
+}
+.vp-plan-bar b { color: var(--text); font-variant-numeric: tabular-nums; }
+.vp-plan-bar .spacer { flex: 1 1 auto; }
+
+.vp-plan-list {
+  max-height: 320px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff;
+}
+.vp-pi {
+  display: flex; align-items: center; gap: 10px; padding: 7px 10px;
+  border-top: 1px solid var(--border); min-width: 0;
+}
+.vp-plan-list > .vp-pi:first-child { border-top: none; }
+.vp-pi:hover { background: var(--panel-2); }
+.vp-pi-n {
+  flex: none; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--bg-2); color: var(--text-2);
+  font: 600 11px/20px system-ui, sans-serif; text-align: center;
+}
+.vp-pi-th {
+  flex: none; width: 54px; height: 38px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 4px; background: var(--panel-2);
+  display: flex; align-items: center; justify-content: center;
+}
+.vp-pi-th img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.vp-pi-m { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.vp-pi-m b { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.vp-pi-m em {
+  font-style: normal; font-size: var(--fs-2xs); color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.vp-pi-w { flex: none; display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+.vp-pi-w button {
+  height: 26px; padding: 0 9px; border: none; border-right: 1px solid var(--border);
+  background: #fff; color: var(--text-2); font-size: var(--fs-xs); font-family: inherit; cursor: pointer;
+}
+.vp-pi-w button:last-child { border-right: none; }
+.vp-pi-w button:hover { background: var(--panel-2); }
+.vp-pi-w button.on { background: var(--primary); color: #fff; }
+.vp-pi-o { flex: none; display: inline-flex; gap: 2px; }
+.vp-pi-o button {
+  width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 4px;
+  background: #fff; color: var(--text-2); font-size: 12px; line-height: 1;
+  cursor: pointer; font-family: inherit;
+}
+.vp-pi-o button:hover { border-color: var(--primary); color: var(--primary); }
+.vp-pi-o button[data-del]:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-weak); }
+.vp-pi-o button:disabled { opacity: .35; cursor: not-allowed; border-color: var(--border); color: var(--text-3); }
+.vp-pi.bad { background: #fff7f7; }
+.vp-pi.bad .vp-pi-m b { color: var(--danger); }
+
+.vp-plan-h2 {
+  margin: 12px 0 6px; font-size: var(--fs-xs); font-weight: 600; color: var(--text-2);
+}
+.vp-prev { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+.vp-mini { flex: none; width: 74px; text-align: center; }
+.vp-mini-g {
+  width: 74px; height: 104px; padding: 3px; background: #fff;
+  border: 1px solid var(--border-strong); border-radius: 3px;
+  display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px;
+  box-shadow: var(--shadow);
+}
+.vp-mc {
+  background: #e8eef7; border-radius: 1px; min-width: 0; min-height: 0;
+  background-size: contain; background-repeat: no-repeat; background-position: center;
+}
+.vp-mc.row { grid-column: span 2; }
+.vp-mc.fill { grid-column: span 2; grid-row: span 2; }
+.vp-mc.blank { background: none; border: 1px dashed var(--border); }
+.vp-mini-n { display: block; margin-top: 3px; font-size: var(--fs-2xs); color: var(--text-3); }

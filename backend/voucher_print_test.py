@@ -186,6 +186,34 @@ def main():
           d["invoices"][0])
     check("附件带可下载地址", d["invoices"][0]["attachments"][0]["url"].startswith("/api/attachments/"),
           d["invoices"][0]["attachments"][0])
+    check("附件带扩展名字段", all("ext" in a for a in d["invoices"][0]["attachments"]),
+          d["invoices"][0]["attachments"][0])
+
+    print("\n== mime 不可信时按后缀兜底 ==")
+    inv2 = req("POST", "/api/invoices", {
+        "invoice_no": f"VPE{tag}", "invoice_type": "电子发票（普通发票）",
+        "amount": 66.0, "invoice_date": "2026-10-26", "seller_name": "兜底判定测试",
+    }, token=TOKEN)[1]
+    st, _ = req("POST", f"/api/invoices/{inv2['id']}/link",
+                params={"reimbursement_id": rid, "item_id": item_id}, token=TOKEN)
+    # 邮件收票/部分手机浏览器给不出 mime：全是 application/octet-stream，
+    # 只认 mime 会把能打的图片/PDF 全判成「原件」，打印出来就是占位卡
+    for kind, name, payload in [
+        ("invoice", "train_ticket.jpg", PNG_1PX),      # 假 jpg（只验判定，不验内容）
+        ("itinerary", "eticket.pdf", PDF_MIN),
+    ]:
+        st, _ = req(
+            "POST", f"/api/invoices/{inv2['id']}/attachments",
+            files=[("file", name, payload, "application/octet-stream")],
+            body={"kind": kind}, token=TOKEN,
+        )
+        check(f"octet-stream 上传 [{name}]", st in (200, 201), st)
+    st, d5 = req("GET", "/api/print/vouchers", params={"ids": str(inv2["id"])}, token=TOKEN)
+    medias2 = [a["media"] for a in d5["invoices"][0]["attachments"]]
+    check("octet-stream 按后缀判成 image/pdf（不再误判原件）",
+          medias2 == ["image", "pdf"], medias2)
+    exts2 = [a["ext"] for a in d5["invoices"][0]["attachments"]]
+    check("ext 字段给出真实后缀", exts2 == ["jpg", "pdf"], exts2)
 
     print("\n== 按 ids 取清单 ==")
     st, d2 = req("GET", "/api/print/vouchers", params={"ids": str(inv_id)}, token=TOKEN)

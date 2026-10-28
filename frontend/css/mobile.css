@@ -1113,4 +1113,28 @@
   .vp-quick-b { height: 34px; padding: 0 14px; }
   .vp-row { flex-wrap: wrap; }
   .vp-lbl { width: 100%; }
+
+  /* 手动排版面板：一行放不下「缩略图 + 名称 + 宽度 + 操作」，
+     改成两行网格——上排认票、下排调宽度和顺序 */
+  .vp-plan-list { max-height: 42vh; }
+  .vp-pi {
+    display: grid;
+    grid-template-columns: 20px 54px minmax(0, 1fr);
+    grid-template-areas:
+      "n th m"
+      "n w o";
+    gap: 6px 8px;
+    align-items: center;
+    padding: 9px 10px;
+  }
+  .vp-pi-n { grid-area: n; align-self: start; }
+  .vp-pi-th { grid-area: th; }
+  .vp-pi-m { grid-area: m; }
+  .vp-pi-w { grid-area: w; }
+  .vp-pi-o { grid-area: o; justify-self: end; }
+  .vp-pi-w button { height: 34px; padding: 0 12px; }
+  .vp-pi-o button { width: 34px; height: 34px; }
+  .vp-plan-bar .btn { min-height: 34px; }
+  .vp-mini-g { width: 66px; height: 93px; }
+  .vp-mini { width: 66px; }
 }

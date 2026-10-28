@@ -96,7 +96,14 @@ async function prepare() {
   };
   const tag = Math.random().toString(36).slice(2, 7);
 
-  const emps = await j('GET', '/api/employees');
+  // 干净库只有 admin，没有员工档案——造一个，否则报销单挂不上申请人
+  let emps = await j('GET', '/api/employees');
+  if (!emps.length) {
+    const e = await j('POST', '/api/employees', { name: '排版审计员', employee_no: 'VPA001' });
+    if (!e || !e.id) throw new Error('创建员工失败：' + JSON.stringify(e));
+    emps = [e];
+    console.log('  已补建测试员工（干净库没有员工档案）');
+  }
   const rb = await j('POST', '/api/reimbursements', {
     title: `凭证打印排版-${tag}`,
     applicant_id: emps[0].id,
@@ -207,9 +214,59 @@ async function prepare() {
   check('开始打印按钮带上所选份数', (await page.locator('#vp-go').textContent()).includes(`${wantN} 份`));
   check('有勾选后按钮可用', !(await page.locator('#vp-go').isDisabled()));
 
-  const popupPromise = page.waitForEvent('popup', { timeout: 20000 });
+  const popupPromise = page.waitForEvent('popup', { timeout: 25000 });
   await page.click(`.vp-seg-b[data-lay="${LAYOUT}"]`);
   await page.click('#vp-go');
+
+  // 手动排版：转图完成后接管弹窗，先在这里改宽度/顺序/删除，再出纸
+  let expectImgs = wantN;
+  if (LAYOUT === 'manual') {
+    await page.waitForSelector('.vp-pi', { timeout: 30000 });
+    await page.waitForSelector('#vp-prev .vp-mini', { timeout: 15000 });
+    const n0 = await page.locator('.vp-pi').count();
+    check('手动排版：每份凭证一行', n0 === wantN, `rows=${n0}`);
+    const p0 = Number(await page.locator('#vp-pages').textContent());
+    check('手动排版：给出预计页数', p0 >= 1, `pages=${p0}`);
+    check('手动排版：有 A4 分页预览', (await page.locator('#vp-prev .vp-mini').count()) === p0,
+      `mini=${await page.locator('#vp-prev .vp-mini').count()} pages=${p0}`);
+    await page.screenshot({ path: path.join(OUT, 'plan-panel.png'), fullPage: true });
+
+    // 单张改「整行」
+    await page.locator('.vp-pi').nth(1).locator('button[data-w="2"]').click();
+    const onRow = await page.locator('.vp-pi').nth(1).locator('button[data-w="2"]').getAttribute('class');
+    check('手动排版：可把单张设为整行', /on/.test(onRow || ''), onRow);
+    const pRow = Number(await page.locator('#vp-pages').textContent());
+    check('手动排版：宽度改动后页数实时重算', Number.isFinite(pRow) && pRow >= 1, `pages=${pRow}`);
+
+    // 上移换序
+    const names0 = (await page.locator('.vp-pi .vp-pi-m em').allTextContents()).slice(0, 2);
+    await page.locator('.vp-pi').nth(1).locator('[data-mv="-1"]').click();
+    const names1 = (await page.locator('.vp-pi .vp-pi-m em').allTextContents()).slice(0, 2);
+    check('手动排版：上移改变打印顺序',
+      names1[0] === names0[1] && names1[1] === names0[0], `${JSON.stringify(names0)} -> ${JSON.stringify(names1)}`);
+
+    // 返回设置再进来：勾选不能丢（plan 会按图像比例重算，这是预期行为）
+    await page.click('#vp-back');
+    await page.waitForSelector('#vp-go', { timeout: 10000 });
+    const backTxt = (await page.locator('#vp-sel').textContent()).trim();
+    check('手动排版：返回设置后勾选保持', backTxt === `已选 ${wantN} / 3`, backTxt);
+    await page.click('#vp-go');
+    await page.waitForSelector('.vp-pi', { timeout: 30000 });
+    check('手动排版：再次进入面板行数不变', (await page.locator('.vp-pi').count()) === n0);
+
+    // 删掉最后一份 → 这次不打它
+    await page.locator('.vp-pi').last().locator('[data-del]').click();
+    const n1 = await page.locator('.vp-pi').count();
+    check('手动排版：可去掉这次不打的一张', n1 === n0 - 1, `rows=${n1}`);
+    expectImgs = n1;
+
+    // 全部半栏 → 每页 4 格
+    await page.click('[data-all="1"]');
+    const pHalf = Number(await page.locator('#vp-pages').textContent());
+    check('手动排版：全部半栏时页数 = ceil(n/4)', pHalf === Math.ceil(n1 / 4), `pages=${pHalf} n=${n1}`);
+
+    await page.click('#vp-do');
+  }
 
   const popup = await popupPromise;
   await popup.waitForLoadState('load');
@@ -253,8 +310,8 @@ async function prepare() {
   console.log('\n== 排版检查 ==');
   check('生成了打印页', r.pageCount >= 1, JSON.stringify(r));
   check('图片全部渲染成功（无裂图）', r.broken === 0, `broken=${r.broken}`);
-  // PDF 样本是单页，渲染出 1 张图；所以「打印出来的图数」= 勾选的凭证数
-  const wantImgs = PICK === 'one' ? 1 : 3;
+  // PDF 样本是单页，渲染出 1 张图；所以「打印出来的图数」= 勾选并保留的凭证数
+  const wantImgs = expectImgs;
   check(`只打勾选的凭证（${wantImgs} 张）`, r.imgs === wantImgs, `imgs=${r.imgs}`);
   check('页码连续且带总数', r.foots.length === r.pageCount && r.foots[0].includes(`1 / ${r.pageCount}`), JSON.stringify(r.foots));
   check('页面高度锁定 A4（无溢出空白页）', r.pageH > 1000 && r.bodyH <= r.pageCount * r.pageH + 40, `pageH=${r.pageH} bodyH=${r.bodyH}`);
@@ -266,6 +323,9 @@ async function prepare() {
     check('智能拼版：横长票独占一行', wideOk, JSON.stringify(r.cells));
     check('智能拼版：竖版票两列并排', tallOk, JSON.stringify(r.cells));
     check('智能拼版：一页放下 2~4 格', r.perPage.every((n) => n >= 1 && n <= 4), per);
+  } else if (LAYOUT === 'manual') {
+    check('手动排版：每页不超过 4 格', r.perPage.every((n) => n <= 4), per);
+    check('手动排版：删除的那张没被打出来', r.imgs === wantImgs, `imgs=${r.imgs} want=${wantImgs}`);
   } else {
     const cap = Number(LAYOUT);
     check(`${LAYOUT} 张/页：每页不超过 ${cap} 格`, r.perPage.every((n) => n <= cap), per);
