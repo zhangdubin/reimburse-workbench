@@ -17,7 +17,7 @@
   'use strict';
 
   const U = WB.util;
-  const V = '2.9.35';                 // 与 index.html 的 ?v= 一致，改版要同步
+  const V = '2.9.36';                 // 与 index.html 的 ?v= 一致，改版要同步
   const PDF_MAX_PAGES = 5;            // 单份 PDF 最多渲染页数（防超大文件把内存吃干）
   const WIDE_RATIO = 1.35;            // 宽高比 ≥ 此值按「横长票」处理，独占一行
 
@@ -61,7 +61,8 @@
       s.onload = () => {
         const lib = window.pdfjsLib;
         if (!lib) return reject(new Error('pdf.js 已下载但未挂载'));
-        lib.GlobalWorkerOptions.workerSrc = `vendor/pdf/pdf.worker.min.js?v=${V}`;
+        // worker 也走绝对地址，页面在子路径下打开时不会被解析到别处
+        lib.GlobalWorkerOptions.workerSrc = `${new URL('vendor/pdf/pdf.worker.min.js', document.baseURI).href}?v=${V}`;
         resolve(lib);
       };
       s.onerror = () => {
@@ -208,8 +209,11 @@
     const buf = await blob.arrayBuffer();
     // cMapUrl 必须带：数电票/铁路客票的值字段用 CID 编码字体，没有 CMap
     // pdf.js 解不出字形——模板框线在、票面值全空白（2.9.35 修复）
-    const cmapUrl = `vendor/pdf/cmaps/`;
-    const docOpts = { data: buf, cMapUrl, cMapPacked: true };
+    const cmapUrl = new URL('vendor/pdf/cmaps/', document.baseURI).href;
+    // 注意：pdf.js 的参数名是大写 C 的 cMapUrl，变量名是小写 cmapUrl，
+    // 这里必须写全 `cMapUrl: cmapUrl`——简写成 `{ cMapUrl }` 会去找同名变量，
+    // 直接 ReferenceError，整个预览空白（2.9.35 翻车点）
+    const docOpts = { data: buf, cMapUrl: cmapUrl, cMapPacked: true };
     let doc;
     try {
       doc = await lib.getDocument(docOpts).promise;
