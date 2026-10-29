@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from .. import models as m
 from .. import security as sec
+from .. import serializers as ser
 from ..database import get_db
 
 router = APIRouter(prefix="/api/print", tags=["打印"])
@@ -97,6 +98,64 @@ def _invoice_out(v: m.Invoice) -> dict:
         "reimbursement_code": v.reimbursement.code if v.reimbursement else None,
         "reimbursement_id": v.reimbursement_id,
         "attachments": [_doc_out(a) for a in docs],
+    }
+
+
+@router.get("/reimbursements", response_model=dict)
+def print_reimbursements(
+    user: Annotated[m.AppUser, Depends(sec.current_user)],
+    db: Session = Depends(get_db),
+    ids: str = Query("", description="报销单 id，英文逗号分隔"),
+):
+    """批量打印：一次取多张报销单的完整打印数据（明细 / 关联发票 / 流转记录）。
+
+    跟 /vouchers 一样放在打印接口里而不是让前端逐单调 /api/reimbursements/{id}：
+    勾二十张单就是二十个并发请求，中途有一张失败还得分批重试。
+
+    越权的单**跳过而不是报错**——勾选里混进一张看不了的单，不该让整批都打
+    不出来，但少了几张必须如实告诉用户（skipped 里带原因）。
+    """
+    id_list: list[int] = []
+    for part in ids.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            raise HTTPException(400, f"报销单 id 不是数字：{part}")
+        id_list.append(int(part))
+    if not id_list:
+        raise HTTPException(400, "请选择要打印的报销单")
+    if len(id_list) > 100:
+        raise HTTPException(400, "一次最多打印 100 张报销单，请分批处理")
+
+    rows = (
+        db.query(m.Reimbursement)
+        .filter(m.Reimbursement.id.in_(id_list))
+        .all()
+    )
+    by_id = {r.id: r for r in rows}
+    items: list[dict] = []
+    skipped: list[dict] = []
+    for oid in id_list:
+        r = by_id.get(oid)
+        if not r:
+            skipped.append({"id": oid, "reason": "单据不存在或已删除"})
+            continue
+        if not sec.can_view(user, r):
+            skipped.append({"id": oid, "reason": "无权查看该单据"})
+            continue
+        items.append(ser.reimbursement_detail(r))
+
+    return {
+        "items": items,
+        "stats": {
+            "count": len(items),
+            "total_amount": round(
+                sum(float(i.get("total_amount") or 0) for i in items), 2
+            ),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
+        },
     }
 
 

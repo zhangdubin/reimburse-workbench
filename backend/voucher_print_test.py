@@ -284,6 +284,52 @@ def main():
     check("别人的票被过滤（不静默返回）",
           st == 200 and d4["invoices"] == [] and d4["stats"]["missing_invoices"] == 1, d4.get("stats"))
 
+    print("\n== 报销单批量打印（v2.9.37）==")
+    st, rb2 = req("POST", "/api/reimbursements", {
+        "title": f"批量打印测试-{tag}",
+        "applicant_id": applicant_id,
+        "items": [{
+            "category_id": None, "occur_date": "2026-10-23",
+            "amount": 132.5, "tax_amount": 0, "description": "市内交通",
+        }],
+    }, token=TOKEN)
+    check("再建一张报销单", st in (200, 201), f"{st} {rb2}")
+    rid2 = rb2["id"]
+
+    st, _ = req("GET", "/api/print/reimbursements")
+    check("未登录 401", st == 401, st)
+    st, _ = req("GET", "/api/print/reimbursements", token=TOKEN)
+    check("空 ids 400", st == 400, st)
+    st, _ = req("GET", "/api/print/reimbursements", params={"ids": "1,abc"}, token=TOKEN)
+    check("非数字报销单 id 400", st == 400, st)
+    st, _ = req("GET", "/api/print/reimbursements",
+                params={"ids": ",".join(str(i) for i in range(1, 102))}, token=TOKEN)
+    check("超过 100 张 400", st == 400, st)
+
+    st, d5 = req("GET", "/api/print/reimbursements", params={"ids": f"{rid2},{rid}"}, token=TOKEN)
+    check("一次取回 2 张单", st == 200 and d5.get("stats", {}).get("count") == 2, f"{st} {d5 if st != 200 else d5.get('stats')}")
+    check("按传入顺序返回（贴票顺序不串行）",
+          [i["id"] for i in d5.get("items", [])] == [rid2, rid],
+          [i["id"] for i in d5.get("items", [])])
+    first = (d5.get("items") or [{}])[0]
+    check("带齐明细 / 关联发票 / 流转记录",
+          {"items", "invoices", "logs"} <= set(first), sorted(first.keys())[:12])
+    check("合计金额为两张单之和",
+          abs((d5.get("stats") or {}).get("total_amount", 0) - 400.5) < 0.01,
+          (d5.get("stats") or {}).get("total_amount"))
+
+    st, d6 = req("GET", "/api/print/reimbursements", params={"ids": f"{rid},99999999"}, token=TOKEN)
+    sk = (d6.get("stats") or {}).get("skipped") or []
+    check("不存在的单被跳过并说明原因",
+          (d6.get("stats") or {}).get("skipped_count") == 1 and "不存在" in sk[0].get("reason", ""),
+          d6.get("stats"))
+    check("跳过的单不影响其余单据", len(d6.get("items") or []) == 1, len(d6.get("items") or []))
+
+    st, d7 = req("GET", "/api/print/reimbursements", params={"ids": str(rid)}, token=utoken)
+    check("别人的单被过滤（不静默返回）",
+          st == 200 and d7.get("items") == [] and (d7.get("stats") or {}).get("skipped_count") == 1,
+          d7.get("stats"))
+
     print(f"\n结果：{OK} 通过 / {FAIL} 失败")
     if FAILED:
         print("失败项：" + "、".join(FAILED))

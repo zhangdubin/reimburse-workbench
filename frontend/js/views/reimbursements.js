@@ -564,8 +564,9 @@ WB.views = WB.views || {};
     batchWrap.innerHTML = `
       <div class="batch-bar" id="rb-bar" style="display:none">
         已选 <b id="rb-picked">0</b> 张报销单
-        <span class="muted">只有草稿与已驳回的单据可删；待审批及以上会跳过并给出原因</span>
+        <span class="muted">批量打印按单据顺序一单一页；只有草稿与已驳回的单据可删</span>
         <div class="spacer"></div>
+        <button class="btn btn-sm" id="rb-print">批量打印</button>
         <button class="btn btn-sm btn-danger" id="rb-del">批量删除</button>
         ${
           WB.can('admin.users')
@@ -598,6 +599,93 @@ WB.views = WB.views || {};
       U.toast(U.batchResult(r, '张'), r.skipped_count ? 'warn' : 'success', 4600);
       if (r.skipped_count) U.toast(U.skipReasons(r), 'warn', 6000);
       await load();
+    }
+
+    /* 批量打印：勾选 → 后端一次取全（过滤掉看不了的单）→ 弹窗里还能再去掉几张
+       → 一单一页连续出纸。之所以不让用户直接打：勾选是顺手勾的，几十张纸打废了
+       没人愿意一张张捡回来，弹窗这一步就是最后的确认。 */
+    async function batchPrint() {
+      const ids = U.pickedIds(host);
+      if (!ids.length) return U.toast('请先勾选要打印的报销单', 'warn');
+      let data;
+      try {
+        data = await api.printReimbursements(ids);
+      } catch (e) {
+        return;
+      }
+      const list = data.items || [];
+      const skipped = (data.stats && data.stats.skipped) || [];
+      if (!list.length) {
+        return U.toast(skipped.length ? '所选单据都没有查看权限，无可打印内容' : '没有可打印的报销单', 'warn');
+      }
+      if (skipped.length) U.toast(`有 ${skipped.length} 张被跳过：${skipped[0].reason}`, 'warn', 4200);
+
+      const rowsHtml = list
+        .map(
+          (d) => `<tr>
+          <td class="ck-col"><input type="checkbox" class="bpr-ck" value="${d.id}" checked></td>
+          <td><div class="mono strong">${U.esc(d.code)}</div><div class="sub-line ellipsis" title="${U.esc(d.title || '')}">${U.esc(d.title || '')}</div></td>
+          <td>${U.esc(d.applicant_name || '—')}</td>
+          <td class="num amount">${U.money(d.total_amount)}</td>
+          <td>${U.badge(d.status)}</td>
+        </tr>`
+        )
+        .join('');
+
+      const m = U.modal({
+        title: `批量打印报销单（${list.length} 张）`,
+        width: 760,
+        body: `
+          <div class="muted" style="margin-bottom:8px">
+            每张单从新的一页开始，页尾带本单的扫码核验码；打印前去掉勾选可临时排除。
+          </div>
+          <div class="table-wrap"><table class="tbl">
+            <thead><tr>
+              <th class="ck-col"><input type="checkbox" id="bpr-all" checked></th>
+              <th>单号 / 标题</th><th>申请人</th><th class="num">金额</th><th>状态</th>
+            </tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table></div>
+          <div class="muted" style="margin-top:8px">合计 <b id="bpr-sum">${U.money((data.stats && data.stats.total_amount) || 0)}</b>（按当前勾选实时计算）</div>`,
+        footer: `<button class="btn" data-close>取消</button>
+          <button class="btn btn-primary" id="bpr-ok">打印 <span id="bpr-n">${list.length}</span> 张</button>`,
+        onMount(mm) {
+          const tbody = mm.el.querySelector('tbody');
+          const sumCell = U.qs('#bpr-sum', mm.el);
+          const nCell = U.qs('#bpr-n', mm.el);
+          const okBtn = U.qs('#bpr-ok', mm.el);
+          const sync = () => {
+            const picked = U.qsa('.bpr-ck', tbody).filter((c) => c.checked);
+            const sum = picked.reduce(
+              (a, c) => a + Number((list.find((d) => String(d.id) === String(c.value)) || {}).total_amount || 0),
+              0
+            );
+            nCell.textContent = picked.length;
+            sumCell.textContent = U.money(sum);
+            okBtn.disabled = !picked.length;
+            okBtn.title = picked.length ? '' : '请至少选择一张报销单';
+            const all = U.qs('#bpr-all', mm.el);
+            all.checked = picked.length === list.length;
+            all.indeterminate = picked.length > 0 && picked.length < list.length;
+          };
+          U.qs('#bpr-all', mm.el).onchange = (e) => {
+            U.qsa('.bpr-ck', tbody).forEach((c) => (c.checked = e.target.checked));
+            sync();
+          };
+          U.qsa('.bpr-ck', tbody).forEach((c) => (c.onchange = sync));
+          okBtn.onclick = () => {
+            const picked = U.qsa('.bpr-ck', tbody)
+              .filter((c) => c.checked)
+              .map((c) => Number(c.value));
+            if (!picked.length) return U.toast('请至少选择一张报销单', 'warn');
+            const sel = picked.map((id) => list.find((d) => d.id === id)).filter(Boolean);
+            mm.close();
+            WB.print.reimbursements(sel);
+          };
+          sync();
+        },
+      });
+      return m;
     }
 
     async function purgeAll() {
@@ -687,6 +775,7 @@ WB.views = WB.views || {};
     });
 
     batchWrap.addEventListener('click', (e) => {
+      if (e.target.closest('#rb-print')) return batchPrint();
       if (e.target.closest('#rb-del')) return batchDelete();
       if (e.target.closest('#rb-purge')) return purgeAll();
     });

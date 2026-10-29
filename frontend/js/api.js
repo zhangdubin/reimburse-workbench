@@ -268,6 +268,10 @@ window.WB = window.WB || {};
     deleteAuditLogs: (ids) => api.post('/api/audit-logs/batch-delete', { ids }),
     purgeAuditLogs: (confirm, params) => api.post('/api/audit-logs/purge', { confirm }, params),
 
+    /* 打印 */
+    // 批量报销单打印：一次取多张单的完整打印数据（后端会过滤掉看不了的并给出原因）
+    printReimbursements: (ids) => api.get('/api/print/reimbursements', { ids: ids.join(',') }),
+
     /* 主数据 */
     list: (res, params) => api.get(`/api/${res}`, params),
     create: (res, b) => api.post(`/api/${res}`, b),

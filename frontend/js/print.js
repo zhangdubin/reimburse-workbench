@@ -1,5 +1,5 @@
 /* =====================================================================
- * 打印模块（v2.9.20）—— 正式财务凭证版式 + Data Matrix
+ * 打印模块（v2.9.37）—— 正式财务凭证版式 + Data Matrix
  *   后端 /api/print/dm（pylibdmtx，ISO/IEC 16022 标准实现）
  *   v2.9.20：DM 码从 position:fixed 贴纸角（每页重复、压正文）改为文档流页脚行
  *            （码图 + 扫码核验说明，只在末页出现）；表格行/区块禁止跨页截断。
@@ -406,6 +406,10 @@ ${bars.replace(/^/gm, '  ')}
 
     /* ---- 页面容器 ---- */
     .page { width: 190mm; margin: 0 auto; padding: 12mm 14mm 10mm; position: relative; }
+    /* ---- 批量打印：单据之间强制换页（v2.9.37）----
+     *   报销单一单一页，靠内容长短自然分页会把一张单劈在两页上；
+     *   高度 0 保证屏幕预览里不出现空白带，只在打印时生效。 */
+    .pg-break { page-break-after: always; break-after: page; height: 0; overflow: hidden; }
 
     /* ---- 公司抬头 ---- */
     .co-head {
@@ -617,7 +621,9 @@ window.onload = () => {
   }
 
   /* ---------- 报销单 ---------- */
-  function reimbursement(d) {
+  /** 单张报销单的版式（page 容器 + 页尾核验码）。
+   *  单张打印与批量打印共用这一段，保证两处版式永远一致。 */
+  function reimbursementDoc(d) {
     const items = d.items || [];
     const invs  = d.invoices || [];
     const logs  = d.logs || [];
@@ -808,7 +814,29 @@ window.onload = () => {
     // 全量信息会把 DM 撑到 40×40 拆成 2×2 四个数据区（像"4 块拼凑"）；
     // ≤26×26 保持单数据区，规整易扫。姓名/部门/金额纸面明文已有。
     const corner = barcodeCorner(String(d.code || ''));
-    deliver(shell(`费用报销单 ${d.code}`, body, corner));
+    return { body, corner };
+  }
+
+  function reimbursement(d) {
+    const doc = reimbursementDoc(d);
+    deliver(shell(`费用报销单 ${d.code}`, doc.body, doc.corner));
+  }
+
+  /** 批量打印：N 张单拼成一份文档，每张单从新的一页开始。
+   *  每张单各带自己的核验码——财务分单归档时，拿哪张单都能单独扫码核验，
+   *  不能只在末页放一个（那样只有最后一张单有码）。 */
+  function reimbursements(list) {
+    const docs = (list || []).filter(Boolean);
+    if (!docs.length) return;
+    const html = docs
+      .map((d, i) => {
+        const doc = reimbursementDoc(d);
+        // 最后一单后面不加分页符，否则末尾会多打一张空白页
+        const brk = i < docs.length - 1 ? '<div class="pg-break"></div>' : '';
+        return doc.body + doc.corner + brk;
+      })
+      .join('');
+    deliver(shell(`费用报销单 ${docs.length} 张`, html, ''));
   }
 
   /* ---------- 发票清单 / 单张 ---------- */
@@ -894,5 +922,5 @@ window.onload = () => {
 
   /* ---------- 暴露接口 ---------- */
   window.WB = window.WB || {};
-  window.WB.print = { reimbursement, invoices, invoice, rmbUpper };
+  window.WB.print = { reimbursement, reimbursements, invoices, invoice, rmbUpper };
 })();
