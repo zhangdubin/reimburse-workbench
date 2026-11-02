@@ -230,27 +230,26 @@ window.WB = window.WB || {};
       }
       root = document.createElement('div');
       root.id = 'login-root';
-      // v2.9.38：品牌栏 + 表单双栏。左栏讲清这是什么系统、谁在用，右栏只做一件事
-      // ——登录。信息分层靠分隔线与间距，不用色块和渐变。
+      // v2.9.39：单栏居中窄栏。页面只做登录一件事——不放品牌故事、不放功能卖点，
+      // 品牌只保留一行（标记 + 名称），其余全部留给表单。栏内文本左对齐。
       root.innerHTML = `
         <div class="login-wrap">
           <div class="login-panel">
-            <aside class="login-side">
-              <div class="ls-brand">
-                <div class="ls-mark">销</div>
-                <div class="ls-name"><b>销售费用报销</b><span>管理工作台</span></div>
+            <div class="login-side">
+              <div class="ls-mark">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 2.75h8.75L19 7v14.25H6z"/>
+                  <path d="M14.75 2.75V7H19"/>
+                  <path d="M9 13.6l2.1 2.1L15 11.8"/>
+                </svg>
               </div>
-              <div class="ls-desc">
-                <i>发票查验、影像归档</i>
-                <i>费用报销、分级审批</i>
-                <i>预算控制、凭证打印与付款</i>
-              </div>
-              <div class="ls-meta"><span>内网部署版</span><span id="lg-ver">版本检测中</span></div>
-            </aside>
+              <div class="ls-name"><b>销售费用报销管理工作台</b><span>Expense Control</span></div>
+            </div>
             <main class="login-main">
               <div class="lm-head">
-                <h1>账号登录</h1>
-                <p>请使用管理员分配的账号登录；密码遗忘请联系财务或系统管理员重置。</p>
+                <h1>登录</h1>
+                <p>请使用管理员分配的账号登录。忘记密码请联系财务或系统管理员重置。</p>
               </div>
               <form id="lg-form" autocomplete="on">
                 <div class="form-item">
@@ -265,19 +264,19 @@ window.WB = window.WB || {};
                   <label for="lg-cap">验证码</label>
                   <div class="cap-field">
                     <input id="lg-cap" name="captcha" autocomplete="off" spellcheck="false"
-                      maxlength="6" placeholder="请输入图中字符">
+                      maxlength="6" placeholder="图中字符">
                     <img id="lg-cap-img" class="lg-cap-img" alt="图形验证码" title="看不清？点击换一张">
                   </div>
-                  <div class="lg-cap-tip">不区分大小写，点击图片可换一张</div>
+                  <div class="lg-cap-tip">不区分大小写，点击图片换一张</div>
                 </div>
                 <div class="lg-error" id="lg-error" style="display:none"></div>
-                <button class="btn btn-primary lg-submit" type="submit" id="lg-submit">登 录</button>
+                <button class="btn btn-primary lg-submit" type="submit" id="lg-submit">登录</button>
               </form>
+              <div class="lg-sso" id="lg-sso" style="display:none"></div>
               <div class="login-foot">
                 <span class="spin-hint" id="lg-status">检查服务状态…</span>
                 <span id="lg-date"></span>
               </div>
-              <div class="lg-sso" id="lg-sso" style="display:none"></div>
             </main>
           </div>
         </div>`;
@@ -380,7 +379,7 @@ window.WB = window.WB || {};
           errBox.textContent = err.message || '登录失败';
           errBox.style.display = '';
           btn.disabled = false;
-          btn.textContent = '登 录';
+          btn.textContent = '登录';
           // 无论密码错还是验证码错都要换一张：验证码是一次性的，
           // 用过即废，不刷新会让用户拿着同一张图反复提交、反复失败。
           await loadCaptcha();
@@ -392,16 +391,17 @@ window.WB = window.WB || {};
       fetch('/api/health')
         .then((r) => r.json())
         .then((h) => {
-          root.querySelector('#lg-status').textContent = `服务正常 · ${h.app} ${h.version}`;
-          root.querySelector('#lg-ver').textContent = `v${h.version}`;
+          root.querySelector('#lg-status').textContent = `服务正常 · v${h.version}`;
           if (h.server_date) root.querySelector('#lg-date').textContent = `服务器日期 ${h.server_date}`;
         })
         .catch(() => {
-          root.querySelector('#lg-status').textContent = '无法连接后端服务，请确认服务已启动';
-          root.querySelector('#lg-ver').textContent = '版本未知';
+          const bad = root.querySelector('#lg-status');
+          bad.textContent = '无法连接后端服务';
+          bad.classList.add('off');
         });
 
-      root.querySelector('#lg-pass').focus();
+      // 打开登录页光标直接落在用户名上，省掉一次点击（移动端会弹键盘，无所谓）
+      root.querySelector('#lg-user').focus();
     },
 
     /** 首次登录（管理员代设密码）时强制改密 */

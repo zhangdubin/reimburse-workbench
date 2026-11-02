@@ -610,124 +610,141 @@ th.num { text-align: right; }
    ================================================================== */
 
 /* ---------------- 登录页 ----------------
-   v2.9.38 重做：拿掉渐变光斑与 12~16px 的圆角胶囊，改成「深色品牌栏 + 白底表单」
-   的双栏版式。这是内网财务系统，界面要像业务系统而不是营销落地页：
-     · 只有品牌深蓝一个强调色（#1a3c6e，与打印抬头、图标、theme-color 同一色）
-     · 圆角 4px、边框 1px、阴影只留一层很淡的投影，靠分隔线而不是色块分区
-     · 信息从左到右分层：品牌 / 功能说明 / 版本 → 表单 → 状态，不做居中孤卡 */
+   v2.9.39 重做。上一版「双栏 + 深色品牌栏 + 网格底纹 + 三条功能卖点」是典型
+   的 AI 生成后台登录长相：装饰全是为填满画面而加的，一眼假。这一版按真实
+   产品的做法重来，取舍依据：
+     · 只做一件事：登录。Carbon 登录模式的结论——用户既然走到登录页就说明
+       已经想进来，不需要再推销一次产品，所以品牌故事 / 功能列表全部删掉
+     · 单栏居中、窄栏 400px，栏内文本一律左对齐（居中对齐的标签是廉价感
+       的主要来源，中文尤其明显）
+     · 纸感：暖白底 + 1px 细边框 + 一层很浅的贴地投影；圆角 4px，不是胶囊
+     · 全页只有深海军蓝一个强调色，只出现在标记 / 聚焦环 / 主按钮上
+     · 字号阶梯拉开：标题 22 / 正文 14 / 辅助 12；长句行高 1.7
+     · 垂直节奏走 8px 网格，间距不是随手填的
+     · 唯一的动效是入场位移 8px，且遵循 prefers-reduced-motion */
 #login-root { position: fixed; inset: 0; z-index: 2000; }
 .login-wrap {
   height: 100%; display: flex; align-items: center; justify-content: center;
-  padding: var(--sp-6); background: var(--bg);
+  padding: 40px 20px; overflow: auto;
+  /* 暖白「纸」底：与系统内的冷蓝灰拉开一点，形成进门的一道界限。
+     渐变跨度只有 7 个亮度级，肉眼几乎察觉不到，只为去掉死板的纯色 */
+  background: linear-gradient(180deg, #f7f7f5 0%, #f0f0ec 100%);
 }
+@keyframes lp-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .login-panel {
-  width: 100%; max-width: 840px;
-  display: grid; grid-template-columns: 296px 1fr;
-  background: var(--panel); border: 1px solid var(--border-strong);
-  border-radius: 6px; overflow: hidden;
-  box-shadow: 0 1px 2px rgba(19, 26, 43, .04), 0 12px 30px rgba(19, 26, 43, .07);
+  width: 100%; max-width: 400px;
+  animation: lp-in .34s var(--ease) both;
 }
-/* 左栏：品牌栏。细网格是唯一装饰（1px、透明度 4%），不抢内容 */
+/* 品牌：一行，标记 + 中文名 + 拉丁小字。拉丁小字用大字距小写，
+   是版式上的「细声部」，让标题不至于孤单，也不抢戏 */
 .login-side {
-  background-color: #1a3c6e; color: #fff; padding: 30px 26px;
-  display: flex; flex-direction: column;
-  background-image:
-    repeating-linear-gradient(0deg, rgba(255,255,255,.045) 0 1px, transparent 1px 26px),
-    repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 1px, transparent 1px 26px);
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 0 18px; padding: 0 2px;
+  animation: lp-in .34s .04s var(--ease) both;
 }
-.ls-brand { display: flex; align-items: center; gap: 11px; }
 .ls-mark {
-  width: 38px; height: 38px; flex: 0 0 38px; border-radius: 4px;
-  background: rgba(255, 255, 255, .13); border: 1px solid rgba(255, 255, 255, .26);
+  width: 34px; height: 34px; flex: 0 0 34px; border-radius: 7px;
+  background: #173a5e; color: #fff;
   display: flex; align-items: center; justify-content: center;
-  font-size: 19px; font-weight: 700;
 }
-.ls-name b { display: block; font-size: var(--fs-md); letter-spacing: .5px; }
-.ls-name span { display: block; font-size: var(--fs-xs); color: rgba(255, 255, 255, .72); margin-top: 2px; }
-.ls-desc {
-  margin-top: 26px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, .16);
-  font-size: var(--fs-sm); line-height: 2.1; color: rgba(255, 255, 255, .88);
+.ls-mark svg { width: 19px; height: 19px; display: block; }
+.ls-name b {
+  display: block; font-size: 15.5px; font-weight: 600; color: #1a2129;
+  letter-spacing: .01em; line-height: 1.3;
 }
-.ls-desc i { display: block; padding-left: 13px; position: relative; font-style: normal; }
-.ls-desc i::before {
-  content: ''; position: absolute; left: 2px; top: 11px;
-  width: 4px; height: 4px; background: rgba(255, 255, 255, .55);
+.ls-name span {
+  display: block; margin-top: 2px; font-size: 10px; color: #9aa1a9;
+  letter-spacing: .13em; text-transform: uppercase; line-height: 1.2;
 }
-.ls-meta {
-  margin-top: auto; padding-top: 16px; display: flex; gap: 12px;
-  font-size: var(--fs-2xs); color: rgba(255, 255, 255, .6);
-  border-top: 1px solid rgba(255, 255, 255, .14);
+/* 纸张：白、细边、4px 圆角、贴地投影。不用「浮起来一大截」的投影 */
+.login-main {
+  background: #fff; border: 1px solid #e4e4df; border-radius: 4px;
+  box-shadow: 0 1px 1px rgba(24, 30, 38, .04), 0 6px 18px -10px rgba(24, 30, 38, .16);
+  padding: 26px 28px 20px;
 }
-/* 右栏：表单 */
-.login-main { padding: 32px 34px 24px; display: flex; flex-direction: column; min-width: 0; }
-.lm-head h1 { margin: 0; font-size: 19px; font-weight: 600; color: var(--text); }
-.lm-head p { margin: 6px 0 22px; font-size: var(--fs-sm); color: var(--text-3); }
-.login-main .form-item { margin-bottom: 15px; }
+.lm-head { margin-bottom: 22px; }
+.lm-head h1 { margin: 0; font-size: 22px; font-weight: 600; color: #1a2129; letter-spacing: -.01em; }
+.lm-head p { margin: 7px 0 0; font-size: 12.5px; line-height: 1.7; color: #7b838d; }
+.login-main .form-item { margin-bottom: 16px; }
 .login-main .form-item > label {
-  font-size: var(--fs-xs); font-weight: 600; color: var(--text-2); letter-spacing: .2px;
+  display: block; margin-bottom: 6px;
+  font-size: 12px; font-weight: 500; color: #5c6773; letter-spacing: .02em;
 }
 .login-main .form-item input {
-  height: 40px; font-size: var(--fs-base); border-radius: 4px; border-color: var(--border-strong);
+  width: 100%; height: 42px; padding: 0 12px;
+  font-family: inherit; font-size: 14px; color: #1a2129;
+  background: #fff; border: 1px solid #dcdcd6; border-radius: 4px;
+  transition: border-color .14s var(--ease), box-shadow .14s var(--ease);
 }
+.login-main .form-item input::placeholder { color: #adb4bc; }
+.login-main .form-item input:hover { border-color: #c7c7c0; }
 .login-main .form-item input:focus {
-  outline: none; border-color: #1a3c6e; box-shadow: 0 0 0 3px rgba(26, 60, 110, .12);
+  outline: none; border-color: #173a5e; box-shadow: 0 0 0 3px rgba(23, 58, 94, .11);
 }
-/* 验证码：输入框 + 图并列，图可点刷新（图本身就是刷新按钮，不再多放一个图标） */
+/* Chrome 自动填充会把输入框刷成难看的淡黄，强行盖回白底 */
+.login-main .form-item input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px #fff inset; -webkit-text-fill-color: #1a2129;
+}
+/* 验证码：输入框 + 图并列，图本身就是刷新按钮，不再多放一个图标 */
 .cap-field { display: flex; gap: 10px; align-items: stretch; }
-.cap-field input { flex: 1 1 auto; letter-spacing: 2px; }
+.cap-field input { flex: 1 1 auto; letter-spacing: .12em; }
 .lg-cap-img {
-  width: 112px; height: 40px; flex: 0 0 112px; display: block;
-  border: 1px solid var(--border-strong); border-radius: 4px; background: #f4f7fb;
-  cursor: pointer;
+  width: 104px; height: 42px; flex: 0 0 104px; display: block;
+  border: 1px solid #dcdcd6; border-radius: 4px; background: #fbfbf9;
+  cursor: pointer; transition: border-color .14s var(--ease);
 }
-.lg-cap-img:hover { border-color: #1a3c6e; }
-.lg-cap-tip { font-size: var(--fs-2xs); color: var(--text-3); margin-top: 5px; }
+.lg-cap-img:hover { border-color: #173a5e; }
+.lg-cap-tip { font-size: 11.5px; color: #949ba4; margin-top: 6px; }
 .lg-error {
-  border-left: 3px solid var(--danger); background: var(--danger-weak); color: #a3231b;
-  border-radius: 0 4px 4px 0; padding: 8px 11px; font-size: var(--fs-sm);
-  margin-bottom: 14px; line-height: 1.6;
+  background: #fdf3f2; border: 1px solid #f1d8d6; color: #9e2b25;
+  border-radius: 4px; padding: 9px 12px; font-size: 12.5px; line-height: 1.6;
+  margin-bottom: 16px;
 }
 .lg-submit {
-  width: 100%; height: 42px; font-size: var(--fs-md); letter-spacing: 4px; border-radius: 4px;
-  background: #1a3c6e; border-color: #1a3c6e;
+  width: 100%; height: 44px; margin-top: 4px;
+  font-size: 15px; font-weight: 500; letter-spacing: .06em;
+  border-radius: 4px; background: #173a5e; border-color: #173a5e;
+  transition: background .14s var(--ease), box-shadow .14s var(--ease);
 }
-.lg-submit:hover:not(:disabled) { background: #16335d; border-color: #16335d; }
+.lg-submit:hover:not(:disabled) { background: #12314f; border-color: #12314f; }
+.lg-submit:focus-visible { box-shadow: 0 0 0 3px rgba(23, 58, 94, .22); outline: none; }
 .login-foot {
-  margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border);
-  display: flex; justify-content: space-between; align-items: center; gap: 8px;
-  font-size: var(--fs-2xs); color: var(--text-3);
+  margin-top: 18px; padding-top: 13px; border-top: 1px solid #eeece7;
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  font-size: 11.5px; color: #949ba4;
 }
+.login-foot .off { color: #c0564e; }
 .spin-hint { display: inline-flex; align-items: center; gap: var(--sp-2); }
 
 /* 统一门户快捷入口（v2.9.23，没配身份源时整块不渲染） */
-.lg-sso { margin-top: var(--sp-5); }
+.lg-sso { margin-top: 18px; }
 .lg-sso-divider {
-  display: flex; align-items: center; gap: var(--sp-3);
-  color: var(--text-3); font-size: var(--fs-xs); margin-bottom: var(--sp-4);
+  display: flex; align-items: center; gap: 12px;
+  color: #949ba4; font-size: 11.5px; margin-bottom: 14px;
 }
 .lg-sso-divider::before, .lg-sso-divider::after {
-  content: ''; flex: 1; height: 1px; background: var(--border);
+  content: ''; flex: 1; height: 1px; background: #eeece7;
 }
 .lg-sso-btn {
-  width: 100%; display: flex; align-items: center; gap: var(--sp-3);
-  height: 42px; padding: 0 var(--sp-4);
-  background: var(--panel-2); border: 1px solid var(--border-strong);
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  height: 44px; padding: 0 14px;
+  background: #fff; border: 1px solid #dcdcd6;
   border-radius: 4px; cursor: pointer;
-  font-size: var(--fs-sm); color: var(--text-1); transition: background .15s, border-color .15s;
+  font-size: 13.5px; color: #1a2129;
+  transition: border-color .14s var(--ease), background .14s var(--ease);
 }
-.lg-sso-btn + .lg-sso-btn { margin-top: var(--sp-3); }
-.lg-sso-btn:hover { background: #eef3fb; border-color: #1a3c6e; }
-.lg-sso-btn svg { width: 18px; height: 18px; flex: 0 0 18px; color: #1a3c6e; }
-.lg-sso-btn span { font-weight: 600; }
+.lg-sso-btn + .lg-sso-btn { margin-top: 10px; }
+.lg-sso-btn:hover { background: #fafaf8; border-color: #173a5e; }
+.lg-sso-btn svg { width: 18px; height: 18px; flex: 0 0 18px; color: #173a5e; }
+.lg-sso-btn span { font-weight: 500; }
 .lg-sso-btn em {
-  margin-left: auto; font-style: normal; font-size: var(--fs-xs); color: var(--text-3);
+  margin-left: auto; font-style: normal; font-size: 11.5px; color: #949ba4;
 }
-/* 窄屏（<900px）就别硬撑双栏了：品牌栏压成顶部一条，表单独占下方 */
-@media (max-width: 900px) {
-  .login-panel { grid-template-columns: 1fr; max-width: 420px; }
-  .login-side { flex-direction: row; align-items: center; gap: 11px; padding: 16px 20px; }
-  .ls-desc, .ls-meta { display: none; }
-  .login-main { padding: 26px 22px 18px; }
+/* 窄屏：去掉左右留白，纸张贴边更利落；拉丁小字在大屏才有用 */
+@media (max-width: 560px) {
+  .login-wrap { padding: 26px 16px; align-items: flex-start; }
+  .ls-name span { display: none; }
+  .login-main { padding: 22px 20px 16px; }
   .login-foot { flex-direction: column; align-items: flex-start; gap: 3px; }
 }
 
