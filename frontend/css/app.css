@@ -609,44 +609,93 @@ th.num { text-align: right; }
    登录页 / 账号菜单 / 影像 / 参数 —— v2.0 生产化新增
    ================================================================== */
 
-/* ---------------- 登录页 ---------------- */
+/* ---------------- 登录页 ----------------
+   v2.9.38 重做：拿掉渐变光斑与 12~16px 的圆角胶囊，改成「深色品牌栏 + 白底表单」
+   的双栏版式。这是内网财务系统，界面要像业务系统而不是营销落地页：
+     · 只有品牌深蓝一个强调色（#1a3c6e，与打印抬头、图标、theme-color 同一色）
+     · 圆角 4px、边框 1px、阴影只留一层很淡的投影，靠分隔线而不是色块分区
+     · 信息从左到右分层：品牌 / 功能说明 / 版本 → 表单 → 状态，不做居中孤卡 */
 #login-root { position: fixed; inset: 0; z-index: 2000; }
 .login-wrap {
   height: 100%; display: flex; align-items: center; justify-content: center;
-  padding: var(--sp-6);
-  background:
-    radial-gradient(900px 460px at 12% 8%, #e6f0ff 0%, rgba(230, 240, 255, 0) 62%),
-    radial-gradient(760px 420px at 88% 92%, #e7f7ee 0%, rgba(231, 247, 238, 0) 60%),
-    var(--bg);
+  padding: var(--sp-6); background: var(--bg);
 }
-.login-card {
-  width: 100%; max-width: 412px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  padding: var(--sp-8) var(--sp-8) var(--sp-7);
+.login-panel {
+  width: 100%; max-width: 840px;
+  display: grid; grid-template-columns: 296px 1fr;
+  background: var(--panel); border: 1px solid var(--border-strong);
+  border-radius: 6px; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(19, 26, 43, .04), 0 12px 30px rgba(19, 26, 43, .07);
 }
-.login-brand { display: flex; align-items: center; gap: var(--sp-4); margin-bottom: var(--sp-7); }
-.login-brand .brand-logo {
-  width: 46px; height: 46px; border-radius: 12px; flex: 0 0 46px;
-  background: linear-gradient(135deg, var(--primary), #4d9bff);
-  color: #fff; font-size: 22px; font-weight: 700;
+/* 左栏：品牌栏。细网格是唯一装饰（1px、透明度 4%），不抢内容 */
+.login-side {
+  background-color: #1a3c6e; color: #fff; padding: 30px 26px;
+  display: flex; flex-direction: column;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.045) 0 1px, transparent 1px 26px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.045) 0 1px, transparent 1px 26px);
+}
+.ls-brand { display: flex; align-items: center; gap: 11px; }
+.ls-mark {
+  width: 38px; height: 38px; flex: 0 0 38px; border-radius: 4px;
+  background: rgba(255, 255, 255, .13); border: 1px solid rgba(255, 255, 255, .26);
   display: flex; align-items: center; justify-content: center;
+  font-size: 19px; font-weight: 700;
 }
-.login-brand b { display: block; font-size: var(--fs-md); }
-.login-brand span { display: block; font-size: var(--fs-xs); color: var(--text-3); margin-top: 2px; }
-.login-card .form-item { margin-bottom: var(--sp-5); }
-.login-card .form-item input { height: 42px; font-size: var(--fs-md); }
+.ls-name b { display: block; font-size: var(--fs-md); letter-spacing: .5px; }
+.ls-name span { display: block; font-size: var(--fs-xs); color: rgba(255, 255, 255, .72); margin-top: 2px; }
+.ls-desc {
+  margin-top: 26px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, .16);
+  font-size: var(--fs-sm); line-height: 2.1; color: rgba(255, 255, 255, .88);
+}
+.ls-desc i { display: block; padding-left: 13px; position: relative; font-style: normal; }
+.ls-desc i::before {
+  content: ''; position: absolute; left: 2px; top: 11px;
+  width: 4px; height: 4px; background: rgba(255, 255, 255, .55);
+}
+.ls-meta {
+  margin-top: auto; padding-top: 16px; display: flex; gap: 12px;
+  font-size: var(--fs-2xs); color: rgba(255, 255, 255, .6);
+  border-top: 1px solid rgba(255, 255, 255, .14);
+}
+/* 右栏：表单 */
+.login-main { padding: 32px 34px 24px; display: flex; flex-direction: column; min-width: 0; }
+.lm-head h1 { margin: 0; font-size: 19px; font-weight: 600; color: var(--text); }
+.lm-head p { margin: 6px 0 22px; font-size: var(--fs-sm); color: var(--text-3); }
+.login-main .form-item { margin-bottom: 15px; }
+.login-main .form-item > label {
+  font-size: var(--fs-xs); font-weight: 600; color: var(--text-2); letter-spacing: .2px;
+}
+.login-main .form-item input {
+  height: 40px; font-size: var(--fs-base); border-radius: 4px; border-color: var(--border-strong);
+}
+.login-main .form-item input:focus {
+  outline: none; border-color: #1a3c6e; box-shadow: 0 0 0 3px rgba(26, 60, 110, .12);
+}
+/* 验证码：输入框 + 图并列，图可点刷新（图本身就是刷新按钮，不再多放一个图标） */
+.cap-field { display: flex; gap: 10px; align-items: stretch; }
+.cap-field input { flex: 1 1 auto; letter-spacing: 2px; }
+.lg-cap-img {
+  width: 112px; height: 40px; flex: 0 0 112px; display: block;
+  border: 1px solid var(--border-strong); border-radius: 4px; background: #f4f7fb;
+  cursor: pointer;
+}
+.lg-cap-img:hover { border-color: #1a3c6e; }
+.lg-cap-tip { font-size: var(--fs-2xs); color: var(--text-3); margin-top: 5px; }
 .lg-error {
-  background: var(--danger-weak); border: 1px solid #f6cccc; color: #b91c1c;
-  border-radius: var(--radius-sm); padding: 10px var(--sp-4); font-size: var(--fs-sm);
-  margin-bottom: var(--sp-4); line-height: 1.6;
+  border-left: 3px solid var(--danger); background: var(--danger-weak); color: #a3231b;
+  border-radius: 0 4px 4px 0; padding: 8px 11px; font-size: var(--fs-sm);
+  margin-bottom: 14px; line-height: 1.6;
 }
-.lg-submit { width: 100%; height: 42px; font-size: var(--fs-md); letter-spacing: 2px; }
+.lg-submit {
+  width: 100%; height: 42px; font-size: var(--fs-md); letter-spacing: 4px; border-radius: 4px;
+  background: #1a3c6e; border-color: #1a3c6e;
+}
+.lg-submit:hover:not(:disabled) { background: #16335d; border-color: #16335d; }
 .login-foot {
-  margin-top: var(--sp-6); padding-top: var(--sp-5); border-top: 1px solid var(--border);
-  text-align: center; font-size: var(--fs-xs); color: var(--text-3);
+  margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  font-size: var(--fs-2xs); color: var(--text-3);
 }
 .spin-hint { display: inline-flex; align-items: center; gap: var(--sp-2); }
 
@@ -661,17 +710,25 @@ th.num { text-align: right; }
 }
 .lg-sso-btn {
   width: 100%; display: flex; align-items: center; gap: var(--sp-3);
-  height: 44px; padding: 0 var(--sp-4);
-  background: var(--primary-weak); border: 1px solid #cfe0ff;
-  border-radius: var(--radius-sm); cursor: pointer;
+  height: 42px; padding: 0 var(--sp-4);
+  background: var(--panel-2); border: 1px solid var(--border-strong);
+  border-radius: 4px; cursor: pointer;
   font-size: var(--fs-sm); color: var(--text-1); transition: background .15s, border-color .15s;
 }
 .lg-sso-btn + .lg-sso-btn { margin-top: var(--sp-3); }
-.lg-sso-btn:hover { background: #e3eeff; border-color: var(--primary); }
-.lg-sso-btn svg { width: 18px; height: 18px; flex: 0 0 18px; color: var(--primary); }
+.lg-sso-btn:hover { background: #eef3fb; border-color: #1a3c6e; }
+.lg-sso-btn svg { width: 18px; height: 18px; flex: 0 0 18px; color: #1a3c6e; }
 .lg-sso-btn span { font-weight: 600; }
 .lg-sso-btn em {
   margin-left: auto; font-style: normal; font-size: var(--fs-xs); color: var(--text-3);
+}
+/* 窄屏（<900px）就别硬撑双栏了：品牌栏压成顶部一条，表单独占下方 */
+@media (max-width: 900px) {
+  .login-panel { grid-template-columns: 1fr; max-width: 420px; }
+  .login-side { flex-direction: row; align-items: center; gap: 11px; padding: 16px 20px; }
+  .ls-desc, .ls-meta { display: none; }
+  .login-main { padding: 26px 22px 18px; }
+  .login-foot { flex-direction: column; align-items: flex-start; gap: 3px; }
 }
 
 /* ---------------- 顶栏账号 ---------------- */

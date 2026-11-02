@@ -93,12 +93,13 @@ window.WB = window.WB || {};
       this.save(null, null);
     },
 
-    async login(username, password) {
+    /** captcha: { captcha_key, captcha_code }，后端关掉验证码时传 null */
+    async login(username, password, captcha) {
       // 登录接口自身会返回 401（密码错），这里刻意不走全局 401 跳转
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify(Object.assign({ username, password }, captcha || {})),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || `登录失败 (${res.status})`);
@@ -216,7 +217,7 @@ window.WB = window.WB || {};
     },
 
     /* -------------------- 登录页 -------------------- */
-    showLogin(prefillError) {
+    async showLogin(prefillError) {
       let root = document.getElementById('login-root');
       if (root) {
         root.style.display = '';
@@ -229,32 +230,55 @@ window.WB = window.WB || {};
       }
       root = document.createElement('div');
       root.id = 'login-root';
+      // v2.9.38：品牌栏 + 表单双栏。左栏讲清这是什么系统、谁在用，右栏只做一件事
+      // ——登录。信息分层靠分隔线与间距，不用色块和渐变。
       root.innerHTML = `
         <div class="login-wrap">
-          <div class="login-card">
-            <div class="login-brand">
-              <div class="brand-logo">销</div>
-              <div>
-                <b>销售费用报销管理工作台</b>
-                <span>内网部署版</span>
+          <div class="login-panel">
+            <aside class="login-side">
+              <div class="ls-brand">
+                <div class="ls-mark">销</div>
+                <div class="ls-name"><b>销售费用报销</b><span>管理工作台</span></div>
               </div>
-            </div>
-            <form id="lg-form" autocomplete="on">
-              <div class="form-item">
-                <label for="lg-user">用户名</label>
-                <input id="lg-user" name="username" autocomplete="username" placeholder="请输入用户名" required>
+              <div class="ls-desc">
+                <i>发票查验、影像归档</i>
+                <i>费用报销、分级审批</i>
+                <i>预算控制、凭证打印与付款</i>
               </div>
-              <div class="form-item">
-                <label for="lg-pass">密码</label>
-                <input id="lg-pass" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+              <div class="ls-meta"><span>内网部署版</span><span id="lg-ver">版本检测中</span></div>
+            </aside>
+            <main class="login-main">
+              <div class="lm-head">
+                <h1>账号登录</h1>
+                <p>请使用管理员分配的账号登录；密码遗忘请联系财务或系统管理员重置。</p>
               </div>
-              <div class="lg-error" id="lg-error" style="display:none"></div>
-              <button class="btn btn-primary lg-submit" type="submit" id="lg-submit">登 录</button>
-            </form>
-            <div class="login-foot">
-              <span class="spin-hint" id="lg-status">检查服务状态…</span>
-            </div>
-            <div class="lg-sso" id="lg-sso" style="display:none"></div>
+              <form id="lg-form" autocomplete="on">
+                <div class="form-item">
+                  <label for="lg-user">用户名</label>
+                  <input id="lg-user" name="username" autocomplete="username" placeholder="请输入用户名" required>
+                </div>
+                <div class="form-item">
+                  <label for="lg-pass">密码</label>
+                  <input id="lg-pass" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+                </div>
+                <div class="form-item" id="lg-cap-row" style="display:none">
+                  <label for="lg-cap">验证码</label>
+                  <div class="cap-field">
+                    <input id="lg-cap" name="captcha" autocomplete="off" spellcheck="false"
+                      maxlength="6" placeholder="请输入图中字符">
+                    <img id="lg-cap-img" class="lg-cap-img" alt="图形验证码" title="看不清？点击换一张">
+                  </div>
+                  <div class="lg-cap-tip">不区分大小写，点击图片可换一张</div>
+                </div>
+                <div class="lg-error" id="lg-error" style="display:none"></div>
+                <button class="btn btn-primary lg-submit" type="submit" id="lg-submit">登 录</button>
+              </form>
+              <div class="login-foot">
+                <span class="spin-hint" id="lg-status">检查服务状态…</span>
+                <span id="lg-date"></span>
+              </div>
+              <div class="lg-sso" id="lg-sso" style="display:none"></div>
+            </main>
           </div>
         </div>`;
       document.body.appendChild(root);
@@ -271,6 +295,33 @@ window.WB = window.WB || {};
       const errBox = root.querySelector('#lg-error');
       const btn = root.querySelector('#lg-submit');
       const ssoBox = root.querySelector('#lg-sso');
+      const capRow = root.querySelector('#lg-cap-row');
+      const capImg = root.querySelector('#lg-cap-img');
+      const capInput = root.querySelector('#lg-cap');
+
+      // 验证码（v2.9.38）：后端开关说了算。关掉时整行不显示，前端不猜、也不留空框。
+      // key 是后端签名过的串，前端只负责原样回传，答案从不出现在响应里。
+      let captcha = null;
+      async function loadCaptcha() {
+        captcha = null;
+        try {
+          const r = await fetch('/api/auth/captcha');
+          const d = await r.json();
+          if (!d || d.enabled === false) {
+            capRow.style.display = 'none';
+            return;
+          }
+          captcha = { captcha_key: d.key || '', captcha_code: '' };
+          capImg.src = d.image || '';
+          capInput.value = '';
+          capRow.style.display = '';
+        } catch (_) {
+          // 拿不到验证码也不能把登录页卡死：隐藏该行，让账密照样能提交
+          capRow.style.display = 'none';
+        }
+      }
+      capImg.onclick = () => loadCaptcha();
+      await loadCaptcha();
 
       // 门户快捷入口：没配身份源就整块隐藏，登录页长相和以前完全一样
       this.ssoProviders().then((items) => {
@@ -306,10 +357,19 @@ window.WB = window.WB || {};
           errBox.style.display = '';
           return;
         }
+        // 验证码行显示着就必须填：允许留空提交等于把验证码关掉
+        const code = capRow.style.display === 'none' ? '' : capInput.value.trim();
+        if (capRow.style.display !== 'none' && !code) {
+          errBox.textContent = '请填写图片中的验证码';
+          errBox.style.display = '';
+          capInput.focus();
+          return;
+        }
+        const payload = captcha ? { captcha_key: captcha.captcha_key, captcha_code: code } : null;
         btn.disabled = true;
         btn.textContent = '登录中…';
         try {
-          const user = await this.login(username, password);
+          const user = await this.login(username, password, payload);
           if (user.must_change_password) {
             sessionStorage.setItem('wb.force_change', '1');
           }
@@ -321,6 +381,10 @@ window.WB = window.WB || {};
           errBox.style.display = '';
           btn.disabled = false;
           btn.textContent = '登 录';
+          // 无论密码错还是验证码错都要换一张：验证码是一次性的，
+          // 用过即废，不刷新会让用户拿着同一张图反复提交、反复失败。
+          await loadCaptcha();
+          if (/验证码/.test(err.message || '')) capInput.focus();
         }
       });
 
@@ -329,9 +393,12 @@ window.WB = window.WB || {};
         .then((r) => r.json())
         .then((h) => {
           root.querySelector('#lg-status').textContent = `服务正常 · ${h.app} ${h.version}`;
+          root.querySelector('#lg-ver').textContent = `v${h.version}`;
+          if (h.server_date) root.querySelector('#lg-date').textContent = `服务器日期 ${h.server_date}`;
         })
         .catch(() => {
-          root.querySelector('#lg-status').textContent = '⚠ 无法连接后端服务，请确认服务已启动';
+          root.querySelector('#lg-status').textContent = '无法连接后端服务，请确认服务已启动';
+          root.querySelector('#lg-ver').textContent = '版本未知';
         });
 
       root.querySelector('#lg-pass').focus();

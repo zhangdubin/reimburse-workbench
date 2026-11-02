@@ -1,7 +1,8 @@
-"""登录 / 登出 / 当前用户 / 改密码。"""
+"""登录 / 登出 / 当前用户 / 改密码 / 登录验证码。"""
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Annotated
 
@@ -9,6 +10,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from .. import approvals as ap
+from .. import captcha as cap
 from .. import models as m
 from .. import security as sec
 from ..database import get_db
@@ -38,6 +41,18 @@ def _audit(db: Session, *, action: str, user: m.AppUser | None, request: Request
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
+    # v2.9.38 图形验证码：开启登录验证码时必填，关闭后后端直接忽略
+    captcha_key: str = Field(default="", max_length=128)
+    captcha_code: str = Field(default="", max_length=16)
+
+
+def _captcha_on(db: Session) -> bool:
+    """登录验证码开关。系统参数优先，另外允许用环境变量整体关掉——
+    内网无障碍部署（读屏软件、纯内网无外网暴露面）可以让运维一次性关掉，
+    .env.example 里**不写**这一项，默认永远是开。"""
+    if (os.getenv("LOGIN_CAPTCHA") or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    return ap.get_setting(db, "login_captcha", "1").strip() != "0"
 
 
 class PasswordIn(BaseModel):
@@ -64,8 +79,28 @@ def user_out(u: m.AppUser) -> dict:
     }
 
 
+@router.get("/captcha")
+def login_captcha(db: Session = Depends(get_db)):
+    """取一张验证码。匿名可访问（本来就是登录前用的）。
+
+    关掉开关时返回 enabled=false，前端据此把整行藏起来——不返回空图，
+    免得用户对着一张看不清的图干瞪眼。
+    """
+    if not _captcha_on(db):
+        return {"enabled": False}
+    code, key = cap.issue()
+    return {"enabled": True, "key": key, "image": cap.data_uri(code)}
+
+
 @router.post("/login", response_model=dict)
 def login(payload: LoginIn, request: Request, db: Session = Depends(get_db)):
+    # 验证码先于密码校验：撞库脚本先得能过验证码，才谈得上消耗 PBKDF2 算力。
+    # 顺序反过来（先验密码）等于让验证码白挡——12 万轮的哈希照样被白嫖。
+    if _captcha_on(db) and not cap.verify(payload.captcha_key, payload.captcha_code):
+        _audit(db, action="登录失败", user=None, request=request, status_code=400,
+               detail=f"用户名 {payload.username!r} 验证码校验未通过")
+        raise HTTPException(400, "验证码不正确或已过期，请点击验证码图片刷新后重试")
+
     user = db.query(m.AppUser).filter(m.AppUser.username == payload.username.strip()).first()
 
     # v2.9.23：门户托管的账号能不能走账密登录由身份源说了算。

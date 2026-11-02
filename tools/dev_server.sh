@@ -40,6 +40,10 @@ mkdir -p "$UPLOAD_DIR"
 # 邮箱授权码加密的主密钥。dev 裸跑也要给，否则邮箱账号保存会失败
 export MAIL_SECRET="${MAIL_SECRET:-dev-local-secret-0123456789abcdef0123456789abcdef}"
 export INBOX_INGEST_TOKEN="${INBOX_INGEST_TOKEN:-dev-ingest-token}"
+# 登录验证码（v2.9.38）：验收脚本里有大量「直接 POST /api/auth/login」的用例，
+# dev 实例默认关掉，免得每个脚本都要先取验证码。生产与镜像默认是开的，
+# 要验验证码本身请另起一个实例：LOGIN_CAPTCHA=1 PORT=8794 tools/dev_server.sh start
+export LOGIN_CAPTCHA="${LOGIN_CAPTCHA:-0}"
 
 export DATABASE_URL="sqlite:///$DB_FILE"
 export ADMIN_USERNAME ADMIN_PASSWORD DOCS_ENABLED
